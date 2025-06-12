@@ -159,7 +159,10 @@ export class ButtonHandler {
             // Set estimated chunks based on text length
             this.audioDiskSaver.setTotalChunks(text.length / 100); // rough estimate based on chunk size
             updateProgress(0, "Processing audio for saving...");
-            this.worker.postMessage({ type: "generate", text: text, voice: "af" });
+
+            // Get the selected voice
+            const selectedVoice = document.getElementById("voiceSelector").value;
+            this.worker.postMessage({ type: "generate", text: text, voice: selectedVoice });
         } catch (error) {
             console.error("Error initializing disk save:", error);
             updateProgress(100, "Error initializing file save!");
