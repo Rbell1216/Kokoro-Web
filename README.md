@@ -1,14 +1,14 @@
-# Streaming-KokoroJS
+# KOKORO TTS
 
 ## About
 Unlimited text-to-speech using [Kokoro-JS](https://github.com/hexgrad/kokoro), 100% local, 100% open source
 
-## Online Demo (that does not send any user text data to any server.)
-[https://rhulha.github.io/StreamingKokoroJS/](https://rhulha.github.io/StreamingKokoroJS/)
+## Live Site (that does not send any user text data to any server.)
+[https://rbell1216.github.io/Kokoro-Web/](https://rbell1216.github.io/Kokoro-Web/)
 
 ## Overview
 
-Streaming-Kokoro is a web-based text-to-speech application that leverages the Kokoro-82M model to generate high-quality speech audio entirely in the browser. The application runs completely in the browser without requiring any server-side processing or API calls, ensuring privacy and offline functionality.
+Kokoro Web is a free web-based text-to-speech application that leverages the Kokoro-82M model to generate high-quality speech audio entirely in the browser. The application runs completely in the browser without requiring any server-side processing or API calls, ensuring privacy and offline functionality.
 
 ## Features
 
