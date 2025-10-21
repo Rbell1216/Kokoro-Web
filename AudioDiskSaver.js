@@ -1,12 +1,4 @@
-import { updateProgress } from "./updateProgress.js";
-
 const SAMPLE_RATE = 24000;
-
-// --- Helper function to remap the slider value ---
-function getRealSpeed(sliderValue) {
-  // Linearly maps slider range [0.5, 2.0] to real speed range [0.75, 1.5]
-  return 0.5 * sliderValue + 0.5;
-}
 
 export class AudioDiskSaver {
   constructor() {
@@ -32,15 +24,10 @@ export class AudioDiskSaver {
           },
         ],
       });
-
+      
       this.fileStream = await fileHandle.createWritable();
-
-      // --- THIS IS THE FIX ---
-      const sliderValue = parseFloat(document.getElementById('speed-slider').value);
-      const realSpeed = getRealSpeed(sliderValue);
-      // --- END OF FIX ---
-
-      await this.writeWavHeader(realSpeed); // Pass the real speed
+      // Write placeholder WAV header (will be updated at the end)
+      await this.writeWavHeader();
       this.headerWritten = true;
     } catch (error) {
       console.error("Error initializing file save:", error);
@@ -73,6 +60,7 @@ export class AudioDiskSaver {
       throw new Error("No file stream available");
     }
     try {
+      // Update the WAV header with final sizes
       await this.updateWavHeader();
       await this.fileStream.close();
       this.reset();
@@ -92,7 +80,10 @@ export class AudioDiskSaver {
       return;
     }
     try {
+      // Give the worker a moment to process the stop message
       await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Update the WAV header before closing to ensure a valid WAV file
       await this.updateWavHeader();
       await this.fileStream.close();
       console.log("Disk save operation stopped");
@@ -126,17 +117,9 @@ export class AudioDiskSaver {
   }
 
   // Write WAV header at the start
-  async writeWavHeader(speed = 1.0) { // Accept the real speed
+  async writeWavHeader() {
     const headerBuffer = new ArrayBuffer(44);
     const view = new DataView(headerBuffer);
-
-    // --- THIS IS THE FIX ---
-    const effective_sample_rate = Math.round(SAMPLE_RATE * speed); // Use real speed
-    const bitsPerSample = 32;
-    const numChannels = 1;
-    const blockAlign = (numChannels * bitsPerSample) / 8;
-    const effective_byte_rate = effective_sample_rate * blockAlign;
-    // --- END OF FIX ---
 
     function writeString(view, offset, string) {
       for (let i = 0; i < string.length; i++) {
@@ -144,33 +127,48 @@ export class AudioDiskSaver {
       }
     }
     
+    // "RIFF" chunk descriptor
     writeString(view, 0, 'RIFF');
-    view.setUint32(4, 0, true); // Placeholder for file size
+    
+    // Placeholder for file size (updated later)
+    view.setUint32(4, 0, true);
+    
+    // "WAVE" format
     writeString(view, 8, 'WAVE');
+    
+    // "fmt " subchunk
     writeString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 3, true);
-    view.setUint16(22, numChannels, true);
-V    view.setUint32(24, effective_sample_rate, true); // Use effective rate
-    view.setUint32(28, effective_byte_rate, true); // Use effective rate
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitsPerSample, true);
+    
+    view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+    view.setUint16(20, 3, true);  // AudioFormat (3 for float)
+    view.setUint16(22, 1, true);  // NumChannels (1 for mono)
+    view.setUint32(24, SAMPLE_RATE, true); // SampleRate
+    view.setUint32(28, SAMPLE_RATE * 4, true); // ByteRate (SampleRate * NumChannels * BitsPerSample/8)
+    view.setUint16(32, 4, true);  // BlockAlign (NumChannels * BitsPerSample/8)
+    view.setUint16(34, 32, true); // BitsPerSample (32 for float)
+    
+    // "data" subchunk
     writeString(view, 36, 'data');
-    view.setUint32(40, 0, true); // Placeholder for data size
+    
+    // Placeholder for data size (updated later)
+    view.setUint32(40, 0, true);
     
     await this.fileStream.write(headerBuffer);
-    this.bytesWritten = 44;
+    this.bytesWritten = 44; // Header size
   }
 
   // Update the WAV header with final sizes
   async updateWavHeader() {
-    this.fileSize = this.dataSize + 36;
+    // File size = header (44) + data size
+    this.fileSize = this.dataSize + 36; // 36 bytes of header info + data size
     
+    // Seek to file size position (offset 4) and update
     await this.fileStream.seek(4);
     const fileSizeBuffer = new ArrayBuffer(4);
     new DataView(fileSizeBuffer).setUint32(0, this.fileSize, true);
     await this.fileStream.write(fileSizeBuffer);
     
+    // Seek to data size position (offset 40) and update
     await this.fileStream.seek(40);
     const dataSizeBuffer = new ArrayBuffer(4);
     new DataView(dataSizeBuffer).setUint32(0, this.dataSize, true);
