@@ -1,5 +1,3 @@
-import { updateProgress } from "./updateProgress.js";
-
 const SAMPLE_RATE = 24000;
 
 export class AudioDiskSaver {
@@ -10,6 +8,7 @@ export class AudioDiskSaver {
     this.processedAudioChunks = 0;
     this.headerWritten = false;
     this.bytesWritten = 0;
+    // For WAV header updates
     this.fileSize = 0;
     this.dataSize = 0;
   }
@@ -28,11 +27,8 @@ export class AudioDiskSaver {
       
       this.fileStream = await fileHandle.createWritable();
       
-      // --- THIS IS MODIFIED ---
-      // We no longer need to get the speed, just write the default header
-      await this.writeWavHeader();
-      // --- END OF MODIFIED BLOCK ---
-      
+      // Write placeholder WAV header
+      await this.writeWavHeader(); // Writes a standard header
       this.headerWritten = true;
     } catch (error) {
       console.error("Error initializing file save:", error);
@@ -65,6 +61,7 @@ export class AudioDiskSaver {
       throw new Error("No file stream available");
     }
     try {
+      // Update the WAV header with final sizes
       await this.updateWavHeader();
       await this.fileStream.close();
       this.reset();
@@ -84,7 +81,10 @@ export class AudioDiskSaver {
       return;
     }
     try {
+      // Give the worker a moment to process the stop message
       await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Update the WAV header before closing to ensure a valid WAV file
       await this.updateWavHeader();
       await this.fileStream.close();
       console.log("Disk save operation stopped");
@@ -117,13 +117,12 @@ export class AudioDiskSaver {
     return Math.min((this.processedAudioChunks / this.totalAudioChunks) * 100, 99);
   }
 
-  // --- THIS FUNCTION IS MODIFIED ---
-  // It now ONLY writes the standard 24000 Hz header
+  // Write WAV header at the start
   async writeWavHeader() {
     const headerBuffer = new ArrayBuffer(44);
     const view = new DataView(headerBuffer);
 
-    const bitsPerSample = 32;
+    const bitsPerSample = 32; // This file saves as 32-bit float
     const numChannels = 1;
     const blockAlign = (numChannels * bitsPerSample) / 8;
     const byteRate = SAMPLE_RATE * blockAlign;
@@ -134,33 +133,48 @@ export class AudioDiskSaver {
       }
     }
     
+    // "RIFF" chunk descriptor
     writeString(view, 0, 'RIFF');
-    view.setUint32(4, 0, true); // Placeholder for file size
+    
+    // Placeholder for file size (updated later)
+    view.setUint32(4, 0, true);
+    
+    // "WAVE" format
     writeString(view, 8, 'WAVE');
+    
+    // "fmt " subchunk
     writeString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 3, true);
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, SAMPLE_RATE, true); // Use standard rate
-    view.setUint32(28, byteRate, true); // Use standard rate
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitsPerSample, true);
+    
+    view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+    view.setUint16(20, 3, true);  // AudioFormat (3 for float)
+    view.setUint16(22, numChannels, true);  // NumChannels (1 for mono)
+    view.setUint32(24, SAMPLE_RATE, true); // SampleRate (STANDARD RATE)
+    view.setUint32(28, byteRate, true); // ByteRate (STANDARD RATE)
+    view.setUint16(32, blockAlign, true);  // BlockAlign
+    view.setUint16(34, bitsPerSample, true); // BitsPerSample (32 for float)
+    
+    // "data" subchunk
     writeString(view, 36, 'data');
-    view.setUint32(40, 0, true); // Placeholder for data size
+    
+    // Placeholder for data size (updated later)
+    view.setUint32(40, 0, true);
     
     await this.fileStream.write(headerBuffer);
-    this.bytesWritten = 44;
+    this.bytesWritten = 44; // Header size
   }
 
   // Update the WAV header with final sizes
   async updateWavHeader() {
+    // File size = header (44) + data size - 8 bytes for RIFF/size
     this.fileSize = this.dataSize + 36;
     
+    // Seek to file size position (offset 4) and update
     await this.fileStream.seek(4);
     const fileSizeBuffer = new ArrayBuffer(4);
     new DataView(fileSizeBuffer).setUint32(0, this.fileSize, true);
     await this.fileStream.write(fileSizeBuffer);
     
+    // Seek to data size position (offset 40) and update
     await this.fileStream.seek(40);
     const dataSizeBuffer = new ArrayBuffer(4);
     new DataView(dataSizeBuffer).setUint32(0, this.dataSize, true);
