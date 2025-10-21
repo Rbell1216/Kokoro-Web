@@ -37,6 +37,10 @@
         <select id="voiceSelector" disabled>          <!-- Voices will be added dynamically -->
         </select>
       </div>
+      <div class="speed-control">
+        <label for="speed-slider">Speed: <span id="speed-label">1.0</span>x</label>
+        <input type="range" id="speed-slider" min="0.5" max="2" step="0.1" value="1.0">
+    </div>
       <button id="streamAudioContext" disabled>
         <!-- Play icon -->
         <span class="btn-content play-content">
