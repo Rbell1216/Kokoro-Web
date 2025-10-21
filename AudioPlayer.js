@@ -6,7 +6,7 @@ export class AudioPlayer {
 
   constructor(worker) {
     this.audioContext = new AudioContext();
-    this.audioQueue = [];
+    this.audioQueue = []; // Queue will now store objects: { buffer, speed }
     this.isPlaying = false;
     this.worker = worker;
     this.totalAudioChunks = 0;
@@ -19,24 +19,36 @@ export class AudioPlayer {
     this.processedAudioChunks = 0;
   }
 
-  async queueAudio(audioData) {
+  // --- THIS FUNCTION IS MODIFIED ---
+  async queueAudio(audioData, speed) { // Accepts speed as an argument
     const audioData2 = new Float32Array(audioData);
     const audioBuffer = this.audioContext.createBuffer(1, audioData2.length, SAMPLE_RATE);
     audioBuffer.getChannelData(0).set(audioData2);
-    this.audioQueue.push(audioBuffer);
+    
+    // Store the buffer AND the speed for it
+    this.audioQueue.push({ buffer: audioBuffer, speed: speed });
     this.playAudioQueue();
   }
 
+  // --- THIS FUNCTION IS MODIFIED ---
   async playAudioQueue() {
     if (this.isPlaying || this.audioQueue.length === 0) return;
 
     this.isPlaying = true;
     try {
       while (this.audioQueue.length > 0) {
+        // Get the next audio chunk and its associated speed
+        const { buffer, speed } = this.audioQueue.shift();
+
         const source = this.audioContext.createBufferSource();
-        this.currentSource = source; // Store current source for stopping
-        source.buffer = this.audioQueue.shift();
+        this.currentSource = source; 
+        source.buffer = buffer; // Use the buffer from the queue
         source.connect(this.audioContext.destination);
+        
+        // --- THIS IS THE FIX ---
+        // Use the speed that was passed in and stored in the queue
+        source.playbackRate.value = speed; 
+        // --- END OF FIX ---
 
         if (this.audioContext.state === "suspended") {
           await this.audioContext.resume();
@@ -46,7 +58,7 @@ export class AudioPlayer {
         console.log("Playing audio buffer");
         await new Promise((resolve) => {
           source.onended = () => {
-            this.currentSource = null; // Clear reference when playback ends
+            this.currentSource = null; 
             resolve();
           };
           source.start();
@@ -72,7 +84,6 @@ export class AudioPlayer {
   stop() {
     console.log("Stopping audio playback");
     
-    // Stop the currently playing source if any
     if (this.currentSource) {
       try {
         this.currentSource.stop();
