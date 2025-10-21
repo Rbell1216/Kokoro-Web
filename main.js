@@ -165,21 +165,34 @@ const onErrorReceived = (e) => {
 tts_worker.addEventListener("message", onMessageReceived);
 tts_worker.addEventListener("error", onErrorReceived);
 
+// --- Helper function to remap the slider value ---
+function getRealSpeed(sliderValue) {
+  // Linearly maps slider range [0.5, 2.0] to real speed range [0.75, 1.5]
+  // 1.0 on slider maps to 1.0x speed
+  return 0.5 * sliderValue + 0.5;
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   updateProgress(0, "Initializing Kokoro model...");
   document.getElementById("progressContainer").style.display = "block";
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
 
-  // --- Add the Speed Slider Listener ---
+  // --- This block is MODIFIED ---
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
   if (speedSlider && speedLabel) {
+    // Set initial label text based on default value
+    speedLabel.textContent = getRealSpeed(parseFloat(speedSlider.value)).toFixed(2);
+    
+    // Update label on input
     speedSlider.addEventListener('input', () => {
-        speedLabel.textContent = parseFloat(speedSlider.value).toFixed(1);
+        const sliderValue = parseFloat(speedSlider.value);
+        const realSpeed = getRealSpeed(sliderValue);
+        speedLabel.textContent = realSpeed.toFixed(2); // Show 2 decimal places
     });
   }
-  // --- End Speed Slider Listener ---
+  // --- End of modified block ---
 });
 
 window.addEventListener("beforeunload", () => {
