@@ -156,6 +156,7 @@ button {
   transition: var(--transition);
   text-align: center;
   display: flex;
+  flex: 1;
   align-items: center;
   justify-content: center;
   box-shadow: var(--shadow);
@@ -330,6 +331,7 @@ button:hover:not(:disabled) svg {
     margin-bottom: 15px;
     justify-content: center;
     color: #555;
+    flex: 1; 
 }
 
 .speed-control label {
