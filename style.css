@@ -322,6 +322,24 @@ button:hover:not(:disabled) svg {
   width: 100%;
 }
 
+/* Add this to the bottom of style.css */
+.speed-control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+    justify-content: center;
+    color: #555;
+}
+
+.speed-control label {
+    font-weight: 500;
+}
+
+#speed-slider {
+    width: 150px;
+}
+
 /* Spinning animation for SVG elements */
 .spin {
   animation: spin-animation 1.5s linear infinite;
@@ -344,3 +362,4 @@ button:hover:not(:disabled) svg {
     transform: rotate(1turn);
   }
 }
+
