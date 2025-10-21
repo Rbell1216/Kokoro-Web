@@ -1,11 +1,5 @@
 const SAMPLE_RATE = 24000;
 
-// --- Helper function to remap the slider value ---
-function getRealSpeed(sliderValue) {
-  // Linearly maps slider range [0.5, 2.0] to real speed range [0.75, 1.5]
-  return 0.5 * sliderValue + 0.5;
-}
-
 export class AudioDiskSaver {
   constructor() {
     this.audioContext = new AudioContext();
@@ -17,7 +11,6 @@ export class AudioDiskSaver {
     // For WAV header updates
     this.fileSize = 0;
     this.dataSize = 0;
-    this.speed = 1.0; // <-- Add this line
   }
 
   async initSave() {
@@ -33,14 +26,8 @@ export class AudioDiskSaver {
       });
       
       this.fileStream = await fileHandle.createWritable();
-      
-      // --- THIS IS THE MODIFIED BLOCK ---
-      const sliderValue = parseFloat(document.getElementById('speed-slider').value);
-      this.speed = getRealSpeed(sliderValue); // Store the real speed
-      // --- END OF MODIFIED BLOCK ---
-
-      // Write placeholder WAV header
-      await this.writeWavHeader(); // It will now use this.speed
+      // Write placeholder WAV header (will be updated at the end)
+      await this.writeWavHeader();
       this.headerWritten = true;
     } catch (error) {
       console.error("Error initializing file save:", error);
@@ -123,7 +110,6 @@ export class AudioDiskSaver {
     this.bytesWritten = 0;
     this.fileSize = 0;
     this.dataSize = 0;
-    this.speed = 1.0; // <-- Add this line
   }
 
   getProgress() {
@@ -131,18 +117,9 @@ export class AudioDiskSaver {
   }
 
   // Write WAV header at the start
-  async writeWavHeader() { // No longer needs a 'speed' argument
+  async writeWavHeader() {
     const headerBuffer = new ArrayBuffer(44);
     const view = new DataView(headerBuffer);
-
-    // --- THIS IS THE MODIFIED BLOCK ---
-    // Use the speed stored in the class
-    const effective_sample_rate = Math.round(SAMPLE_RATE * this.speed); 
-    const bitsPerSample = 32; // This file saves as 32-bit float
-    const numChannels = 1;
-    const blockAlign = (numChannels * bitsPerSample) / 8;
-    const effective_byte_rate = effective_sample_rate * blockAlign;
-    // --- END OF MODIFIED BLOCK ---
 
     function writeString(view, offset, string) {
       for (let i = 0; i < string.length; i++) {
@@ -164,11 +141,11 @@ export class AudioDiskSaver {
     
     view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
     view.setUint16(20, 3, true);  // AudioFormat (3 for float)
-    view.setUint16(22, numChannels, true);  // NumChannels (1 for mono)
-    view.setUint32(24, effective_sample_rate, true); // SampleRate (USE EFFECTIVE RATE)
-    view.setUint32(28, effective_byte_rate, true); // ByteRate (USE EFFECTIVE RATE)
-    view.setUint16(32, blockAlign, true);  // BlockAlign
-    view.setUint16(34, bitsPerSample, true); // BitsPerSample (32 for float)
+    view.setUint16(22, 1, true);  // NumChannels (1 for mono)
+    view.setUint32(24, SAMPLE_RATE, true); // SampleRate
+    view.setUint32(28, SAMPLE_RATE * 4, true); // ByteRate (SampleRate * NumChannels * BitsPerSample/8)
+    view.setUint16(32, 4, true);  // BlockAlign (NumChannels * BitsPerSample/8)
+    view.setUint16(34, 32, true); // BitsPerSample (32 for float)
     
     // "data" subchunk
     writeString(view, 36, 'data');
@@ -182,8 +159,8 @@ export class AudioDiskSaver {
 
   // Update the WAV header with final sizes
   async updateWavHeader() {
-    // File size = header (44) + data size - 8 bytes for RIFF/size
-    this.fileSize = this.dataSize + 36;
+    // File size = header (44) + data size
+    this.fileSize = this.dataSize + 36; // 36 bytes of header info + data size
     
     // Seek to file size position (offset 4) and update
     await this.fileStream.seek(4);
