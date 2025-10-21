@@ -1,6 +1,12 @@
 import { updateProgress } from "./updateProgress.js";
 
-const SAMPLE_RATE = 24000; // Assuming this is correct for Kokoro
+const SAMPLE_RATE = 24000;
+
+// --- Helper function to remap the slider value ---
+function getRealSpeed(sliderValue) {
+  // Linearly maps slider range [0.5, 2.0] to real speed range [0.75, 1.5]
+  return 0.5 * sliderValue + 0.5;
+}
 
 export class AudioPlayer {
 
@@ -38,10 +44,11 @@ export class AudioPlayer {
         source.buffer = this.audioQueue.shift();
         source.connect(this.audioContext.destination);
         
-        // --- Apply the speed from the slider ---
-        const speed = parseFloat(document.getElementById('speed-slider').value);
-        source.playbackRate.value = speed; // Corrected: use 'source'
-        // --- End speed application ---
+        // --- THIS IS THE FIX ---
+        const sliderValue = parseFloat(document.getElementById('speed-slider').value);
+        const realSpeed = getRealSpeed(sliderValue);
+        source.playbackRate.value = realSpeed; // Use the remapped speed
+        // --- END OF FIX ---
 
         if (this.audioContext.state === "suspended") {
           await this.audioContext.resume();
@@ -77,7 +84,6 @@ export class AudioPlayer {
   stop() {
     console.log("Stopping audio playback");
     
-    // Stop the currently playing source if any
     if (this.currentSource) {
       try {
         this.currentSource.stop();
