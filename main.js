@@ -4,9 +4,9 @@ import { AudioDiskSaver } from "./AudioDiskSaver.js";
 import { ButtonHandler } from "./ButtonHandler.js";
 
 // --- Helper function to remap the slider value ---
-// We can use the full range [0.5, 2.0] now because it won't affect pitch.
 function getRealSpeed(sliderValue) {
-  return parseFloat(sliderValue);
+  // Linearly maps slider range [0.5, 2.0] to real speed range [0.75, 1.5]
+  return 0.5 * sliderValue + 0.5;
 }
 
 if (window.location.hostname === "localhost") {
@@ -104,19 +104,14 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
 
     case "stream_audio_data":
       if (buttonHandler.getMode() === "disk") {
-        // --- THIS IS MODIFIED ---
-        // Pass the audio data to the disk saver
         const percent = await audioDiskSaver.addAudioChunk(e.data.audio);
-        // --- END MODIFIED BLOCK ---
         updateProgress(percent, "Processing audio for saving...");
         buttonHandler.updateDiskButtonToStop();
         tts_worker.postMessage({ type: "buffer_processed" });
       } else if (buttonHandler.getMode() === "stream") {
         buttonHandler.updateStreamButtonToStop();
-        // --- THIS IS MODIFIED ---
-        // Pass the audio data to the player (speed is handled by the player itself now)
+        // AudioPlayer just plays the audio it receives. Speed is already handled by the worker.
         await audioPlayer.queueAudio(e.data.audio);
-        // --- END MODIFIED BLOCK ---
       }
       break;
 
@@ -172,18 +167,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
 
-  // --- THIS BLOCK IS MODIFIED ---
+  // --- THIS IS THE MODIFIED BLOCK FOR THE LABEL ---
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
   if (speedSlider && speedLabel) {
     // Set initial label text based on default value
-    speedLabel.textContent = getRealSpeed(parseFloat(speedSlider.value)).toFixed(2); // Use 2 decimal places
+    speedLabel.textContent = getRealSpeed(parseFloat(speedSlider.value)).toFixed(2);
     
     // Update label on input
     speedSlider.addEventListener('input', () => {
         const sliderValue = parseFloat(speedSlider.value);
         const realSpeed = getRealSpeed(sliderValue);
-        speedLabel.textContent = realSpeed.toFixed(2);
+        speedLabel.textContent = realSpeed.toFixed(2); // Show 2 decimal places
     });
   }
   // --- END OF MODIFIED BLOCK ---
