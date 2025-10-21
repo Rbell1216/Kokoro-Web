@@ -322,22 +322,23 @@ button:hover:not(:disabled) svg {
   width: 100%;
 }
 
-/* Add this to the bottom of style.css */
 .speed-control {
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 15px;
-    justify-content: center;
-    color: #555;
+    margin-bottom: 15px; /* Adjust spacing as needed */
+    justify-content: center; /* Center align if desired */
+    color: #555; /* Match other text colors if needed */
 }
 
 .speed-control label {
     font-weight: 500;
+    white-space: nowrap; /* Prevent label from wrapping */
 }
 
 #speed-slider {
-    width: 150px;
+    width: 150px; /* Adjust width as needed */
+    cursor: pointer;
 }
 
 /* Spinning animation for SVG elements */
