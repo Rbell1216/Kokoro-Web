@@ -3,6 +3,12 @@ import { AudioPlayer } from "./AudioPlayer.js";
 import { AudioDiskSaver } from "./AudioDiskSaver.js";
 import { ButtonHandler } from "./ButtonHandler.js";
 
+// --- Helper function to remap the slider value ---
+// We can use the full range [0.5, 2.0] now because it won't affect pitch.
+function getRealSpeed(sliderValue) {
+  return parseFloat(sliderValue);
+}
+
 if (window.location.hostname === "localhost") {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./service-worker.js").then(() => {
@@ -14,7 +20,8 @@ if (window.location.hostname === "localhost") {
 let tts_worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 let audioPlayer = new AudioPlayer(tts_worker);
 let audioDiskSaver = new AudioDiskSaver();
-let buttonHandler = new ButtonHandler(tts_worker, audioPlayer, audioDiskSaver);
+// --- MODIFIED: Pass the getRealSpeed function to the ButtonHandler ---
+let buttonHandler = new ButtonHandler(tts_worker, audioPlayer, audioDiskSaver, getRealSpeed);
 
 function populateVoiceSelector(voices) {
   const voiceSelector = document.getElementById("voiceSelector");
@@ -97,18 +104,19 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
 
     case "stream_audio_data":
       if (buttonHandler.getMode() === "disk") {
+        // --- THIS IS MODIFIED ---
+        // Pass the audio data to the disk saver
         const percent = await audioDiskSaver.addAudioChunk(e.data.audio);
+        // --- END MODIFIED BLOCK ---
         updateProgress(percent, "Processing audio for saving...");
-        // Update the disk button to the stop state if it's still loading
         buttonHandler.updateDiskButtonToStop();
-        // Notify worker when buffer has been processed in disk mode
         tts_worker.postMessage({ type: "buffer_processed" });
       } else if (buttonHandler.getMode() === "stream") {
-        // Update the stream button to the stop state if it's still loading
         buttonHandler.updateStreamButtonToStop();
-        // In stream mode, the buffer_processed notification is actually handled in AudioPlayer.js.
-        // as well as the updateProgress() call.
+        // --- THIS IS MODIFIED ---
+        // Pass the audio data to the player (speed is handled by the player itself now)
         await audioPlayer.queueAudio(e.data.audio);
+        // --- END MODIFIED BLOCK ---
       }
       break;
 
@@ -124,20 +132,15 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
           updateProgress(100, "Error saving file!");
         }
         buttonHandler.setMode("none");
-        // Reset the disk button state after saving is complete
         buttonHandler.resetDiskButton();
         document.getElementById("streamAudioContext").disabled = false;
       } else if (buttonHandler.getMode() === "stream") {
-        // Only reset streaming state when complete is received and we're still in streaming mode
         buttonHandler.setStreaming(false);
         buttonHandler.setMode("none");
         updateProgress(100, "Streaming complete");
-
-        // Use resetStreamButton instead of enableButtons
         buttonHandler.resetStreamButton();
         document.getElementById("streamDisk").disabled = false;
       } else {
-        // For any other mode, use the standard enableButtons function
         buttonHandler.enableButtons();
       }
       break;
@@ -146,13 +149,11 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
 
 const onErrorReceived = (e) => {
   console.error("Worker error:", e);
-  // Get the current mode before resetting it
   const currentMode = buttonHandler.getMode();
   buttonHandler.setStreaming(false);
   buttonHandler.setMode("none");
   updateProgress(100, "An error occurred! Please try again.");
   
-  // Reset the appropriate button based on the mode we were in
   if (currentMode === "disk") {
     buttonHandler.resetDiskButton();
     document.getElementById("streamAudioContext").disabled = false;
@@ -170,6 +171,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("progressContainer").style.display = "block";
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
+
+  // --- THIS BLOCK IS MODIFIED ---
+  const speedSlider = document.getElementById('speed-slider');
+  const speedLabel = document.getElementById('speed-label');
+  if (speedSlider && speedLabel) {
+    // Set initial label text based on default value
+    speedLabel.textContent = getRealSpeed(parseFloat(speedSlider.value)).toFixed(2); // Use 2 decimal places
+    
+    // Update label on input
+    speedSlider.addEventListener('input', () => {
+        const sliderValue = parseFloat(speedSlider.value);
+        const realSpeed = getRealSpeed(sliderValue);
+        speedLabel.textContent = realSpeed.toFixed(2);
+    });
+  }
+  // --- END OF MODIFIED BLOCK ---
 });
 
 window.addEventListener("beforeunload", () => {
