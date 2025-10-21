@@ -1,6 +1,6 @@
 import { updateProgress } from "./updateProgress.js";
 
-const SAMPLE_RATE = 24000;
+const SAMPLE_RATE = 24000; // Assuming this is correct for Kokoro
 
 export class AudioPlayer {
 
@@ -37,6 +37,11 @@ export class AudioPlayer {
         this.currentSource = source; // Store current source for stopping
         source.buffer = this.audioQueue.shift();
         source.connect(this.audioContext.destination);
+        
+        // --- Apply the speed from the slider ---
+        const speed = parseFloat(document.getElementById('speed-slider').value);
+        source.playbackRate.value = speed; // Corrected: use 'source'
+        // --- End speed application ---
 
         if (this.audioContext.state === "suspended") {
           await this.audioContext.resume();
