@@ -39,12 +39,11 @@ const MAX_QUEUE_SIZE = 6;
 let shouldStop = false;
 
 self.addEventListener("message", async (e) => {
-  const { type, text, voice } = e.data;
+  const { type, text, voice, speed } = e.data; // <-- Get speed from the message
   if (type === "stop") {
     bufferQueueSize = 0;
     shouldStop = true;
     console.log("Stop command received, stopping generation");
-    //self.postMessage({ status: "complete" });
     return;
   }
 
@@ -53,7 +52,7 @@ self.addEventListener("message", async (e) => {
     return;
   }
 
-  if (text) {
+  if (type === "generate" && text) { // Check for "generate" type
     shouldStop = false;
     let chunks = splitTextSmart(text, 300); // 400 seems to long for kokoro.
     
@@ -80,7 +79,11 @@ self.addEventListener("message", async (e) => {
         break;
       }
 
-      const audio = await tts.generate(chunk, { voice }); // This is transformers RawAudio
+      // --- THIS IS THE MODIFIED BLOCK ---
+      // Pass the speed parameter to the generate function
+      const audio = await tts.generate(chunk, { voice, speed }); 
+      // --- END OF MODIFIED BLOCK ---
+
       let ab = audio.audio.buffer;
 
       bufferQueueSize++;
@@ -93,4 +96,3 @@ self.addEventListener("message", async (e) => {
     }
   }
 });
-
