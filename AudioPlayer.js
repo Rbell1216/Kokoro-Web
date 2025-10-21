@@ -37,8 +37,10 @@ export class AudioPlayer {
         this.currentSource = source; // Store current source for stopping
         source.buffer = this.audioQueue.shift();
         source.connect(this.audioContext.destination);
+        
+        // This is the corrected line:
         const speed = parseFloat(document.getElementById('speed-slider').value);
-        source.playbackRate.value = speed;
+        source.playbackRate.value = speed; // Was 'this.source', now 'source'
 
         if (this.audioContext.state === "suspended") {
           await this.audioContext.resume();
