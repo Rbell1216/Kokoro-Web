@@ -3,12 +3,6 @@ import { AudioPlayer } from "./AudioPlayer.js";
 import { AudioDiskSaver } from "./AudioDiskSaver.js";
 import { ButtonHandler } from "./ButtonHandler.js";
 
-// --- Helper function to remap the slider value ---
-function getRealSpeed(sliderValue) {
-  // Linearly maps slider range [0.5, 2.0] to real speed range [0.75, 1.5]
-  return 0.5 * sliderValue + 0.5;
-}
-
 if (window.location.hostname === "localhost") {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./service-worker.js").then(() => {
@@ -112,15 +106,9 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
       } else if (buttonHandler.getMode() === "stream") {
         // Update the stream button to the stop state if it's still loading
         buttonHandler.updateStreamButtonToStop();
-        
-        // --- THIS IS THE MODIFIED BLOCK ---
-        // 1. Get the current slider value
-        const sliderValue = parseFloat(document.getElementById('speed-slider').value);
-        // 2. Calculate the real speed
-        const realSpeed = getRealSpeed(sliderValue);
-        // 3. Pass the real speed to the audio player
-        await audioPlayer.queueAudio(e.data.audio, realSpeed);
-        // --- END OF MODIFIED BLOCK ---
+        // In stream mode, the buffer_processed notification is actually handled in AudioPlayer.js.
+        // as well as the updateProgress() call.
+        await audioPlayer.queueAudio(e.data.audio);
       }
       break;
 
@@ -182,22 +170,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("progressContainer").style.display = "block";
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
-
-  // --- THIS IS THE MODIFIED BLOCK FOR THE LABEL ---
-  const speedSlider = document.getElementById('speed-slider');
-  const speedLabel = document.getElementById('speed-label');
-  if (speedSlider && speedLabel) {
-    // Set initial label text based on default value
-    speedLabel.textContent = getRealSpeed(parseFloat(speedSlider.value)).toFixed(2);
-    
-    // Update label on input
-    speedSlider.addEventListener('input', () => {
-        const sliderValue = parseFloat(speedSlider.value);
-        const realSpeed = getRealSpeed(sliderValue);
-        speedLabel.textContent = realSpeed.toFixed(2); // Show 2 decimal places
-    });
-  }
-  // --- END OF MODIFIED BLOCK ---
 });
 
 window.addEventListener("beforeunload", () => {
