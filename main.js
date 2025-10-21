@@ -170,6 +170,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("progressContainer").style.display = "block";
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
+
+  // --- Add the Speed Slider Listener ---
+  const speedSlider = document.getElementById('speed-slider');
+  const speedLabel = document.getElementById('speed-label');
+  if (speedSlider && speedLabel) {
+    speedSlider.addEventListener('input', () => {
+        speedLabel.textContent = parseFloat(speedSlider.value).toFixed(1);
+    });
+  }
+  // --- End Speed Slider Listener ---
 });
 
 window.addEventListener("beforeunload", () => {
