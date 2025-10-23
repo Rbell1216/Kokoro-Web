@@ -23,7 +23,7 @@ if (self.location.hostname === "localhost2") {
 
 const tts = await KokoroTTS.from_pretrained(model_id, {
   // --- THIS IS THE MODIFIED LINE ---
-  dtype: "fp16", // Use fp16 for better performance on mobile
+  dtype: "fp32", // Use fp16 for better performance on mobile
   // --- END MODIFIED LINE ---
   device,
   progress_callback: (progress) => {
