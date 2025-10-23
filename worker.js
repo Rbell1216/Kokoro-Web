@@ -38,7 +38,7 @@ self.postMessage({ status: "loading_model_ready", voices: tts.voices, device });
 
 // --- THIS IS THE MEMORY-SAFE QUEUE LOGIC ---
 let bufferQueueSize = 0;
-const MAX_QUEUE_SIZE = 6; // Work ahead by 6 chunks (This is already set correctly)
+const MAX_QUEUE_SIZE = 12; // Work ahead by 6 chunks (This is already set correctly)
 let shouldStop = false;
 // --- END QUEUE LOGIC ---
 
