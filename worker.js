@@ -22,7 +22,7 @@ if (self.location.hostname === "localhost2") {
 }
 
 const tts = await KokoroTTS.from_pretrained(model_id, {
-  dtype: device === "wasm" ? "q8" : "fp32", // This is the auto-select logic
+  dtype: device === "wasm" ? "q8" : "fp32",
   device,
   progress_callback: (progress) => {
     self.postMessage({ status: "loading_model_progress", progress });
@@ -34,65 +34,51 @@ const tts = await KokoroTTS.from_pretrained(model_id, {
 
 self.postMessage({ status: "loading_model_ready", voices: tts.voices, device });
 
-// --- THIS IS THE MEMORY-SAFE QUEUE LOGIC ---
+// --- THIS IS THE MEMORY-SAFE QUEUE LOGIC FOR SENTENCES WITHIN A CHUNK ---
 let bufferQueueSize = 0;
-const MAX_QUEUE_SIZE = 6; // Work ahead by 6 chunks
+const MAX_QUEUE_SIZE = 6;
 let shouldStop = false;
 // --- END QUEUE LOGIC ---
 
 self.addEventListener("message", async (e) => {
-  const { type, text, voice, speed } = e.data; // <-- Get speed from the message
+  const { type, text, voice, speed } = e.data;
   
   if (type === "stop") {
-    bufferQueueSize = 0;
     shouldStop = true;
+    bufferQueueSize = 0;
     console.log("Stop command received, stopping generation");
     return;
   }
 
-  // --- THIS IS THE MEMORY-SAFE QUEUE LOGIC ---
   if (type === "buffer_processed") {
-    bufferQueueSize = Math.max(0, bufferQueueSize - 1); // Free up a slot
+    bufferQueueSize = Math.max(0, bufferQueueSize - 1);
     return;
   }
-  // --- END QUEUE LOGIC ---
 
   if (type === "generate" && text) { 
     shouldStop = false;
-    let chunks = splitTextSmart(text, 300); 
     
-    self.postMessage({ status: "chunk_count", count: chunks.length });
+    // This now splits only the SMALL chunk it was given
+    let sentences = splitTextSmart(text, 300); 
 
-    for (const chunk of chunks) {
-      if (shouldStop) {
-        console.log("Stopping audio generation");
-        self.postMessage({ status: "complete" });
-        break;
-      }
-      console.log(chunk);
+    for (const sentence of sentences) {
+      if (shouldStop) break;
 
-      // --- THIS IS THE MEMORY-SAFE QUEUE LOGIC ---
-      // Wait if the queue is full
       while (bufferQueueSize >= MAX_QUEUE_SIZE && !shouldStop) {
-        console.log("Waiting for buffer space...");
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 sec
+        await new Promise(resolve => setTimeout(resolve, 500));
         if (shouldStop) break;
       }
-
-      if (shouldStop) {
-        console.log("Stopping after queue wait");
-        self.postMessage({ status: "complete" });
-        break;
-      }
-      // --- END QUEUE LOGIC ---
+      if (shouldStop) break;
       
-      const audio = await tts.generate(chunk, { voice, speed }); 
-      let ab = audio.audio.buffer;
+      const audio = await tts.generate(sentence, { voice, speed }); 
+      if (shouldStop) break;
 
-      bufferQueueSize++; // Increment the queue size
-      self.postMessage({ status: "stream_audio_data", audio: ab, text: chunk }, [ab]);
+      let ab = audio.audio.buffer;
+      bufferQueueSize++;
+      self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
     }
 
+    // When the loop finishes, this chunk is "complete"
     if (!shouldStop) {
       self.postMessage({ status: "complete" });
     }
