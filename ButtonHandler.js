@@ -1,7 +1,5 @@
 import { updateProgress } from "./updateProgress.js";
 
-const CHUNK_SIZE = 5000; // Process 5000 characters at a time
-
 export class ButtonHandler {
   constructor(worker, audioPlayer, audioDiskSaver, getRealSpeedFunc) {
     this.worker = worker;
@@ -10,11 +8,6 @@ export class ButtonHandler {
     this.getRealSpeed = getRealSpeedFunc; 
     this.mode = "none";
     this.isStreaming = false;
-
-    // --- NEW LOGIC FOR DISPATCHING ---
-    this.textQueue = [];
-    this.currentChunkIndex = 0;
-    // --- END NEW LOGIC ---
 
     this.handleStreamButtonClick = this.handleStreamButtonClick.bind(this);
     this.handleDiskButtonClick = this.handleDiskButtonClick.bind(this);
@@ -32,34 +25,96 @@ export class ButtonHandler {
     const speed = this.getRealSpeed(sliderValue); 
     return { text, voice, speed };
   }
+
+  showButtonContent(button, contentType) {
+    const allContents = button.querySelectorAll('.btn-content');
+    allContents.forEach(content => {
+        content.style.display = 'none';
+    });
+
+    let contentClass;
+    switch (contentType) {
+        case 'play': contentClass = '.play-content'; break;
+        case 'stop': contentClass = '.stop-content'; break;
+        case 'loading': contentClass = '.loading-content'; break;
+        case 'download': contentClass = '.download-content'; break;
+        case 'download-loading': contentClass = '.download-loading-content'; break;
+        case 'stop-download': contentClass = '.stop-content'; break;
+        default: console.error('Unknown content type:', contentType); return;
+    }
+
+    const contentToShow = button.querySelector(contentClass);
+    if (contentToShow) {
+        contentToShow.style.display = 'inline-flex';
+    }
+  }
+
+  enableButtons() {
+    const streamBtn = document.getElementById("streamAudioContext");
+    const diskBtn = document.getElementById("streamDisk");
+
+    if (this.isStreaming) return;
+    
+    streamBtn.disabled = false;
+    diskBtn.disabled = false;
+    streamBtn.classList.remove("loading", "stop-streaming", "has-content");
+    diskBtn.classList.remove("loading", "stop-saving", "has-content");
+    this.showButtonContent(streamBtn, "play");
+    this.showButtonContent(diskBtn, "download");
+  }
+
+  updateStreamButtonToStop() {
+    const streamBtn = document.getElementById("streamAudioContext");
+    if (streamBtn.classList.contains("loading")) {
+        streamBtn.disabled = false;
+        streamBtn.classList.remove("loading");
+        streamBtn.classList.add("stop-streaming", "has-content");
+        this.showButtonContent(streamBtn, "stop");
+    }
+  }
+
+  resetStreamButton() {
+    this.resetStreamingState(); // Centralize reset logic
+  }
   
-  // --- STREAMING (Full script) ---
+  resetDiskButton() {
+    this.resetStreamingState(); // Centralize reset logic
+  }
+
+  // --- NEW CENTRAL RESET FUNCTION ---
+  resetStreamingState() {
+    this.isStreaming = false;
+    this.mode = "none";
+    this.enableButtons();
+  }
+  // --- END NEW FUNCTION ---
+
   handleStreamButtonClick() {
     if (this.isStreaming) {
+      this.audioPlayer.stop(); // This will also send a "stop" message to the worker
       this.resetStreamingState();
-      this.audioPlayer.stop(); 
       updateProgress(100, "Streaming stopped");
       return;
     }
 
     this.setStreamingState("stream");
+    
     const { text, voice, speed } = this.getTtsOptions();
     if (text.trim().length === 0) {
         this.resetStreamingState();
         return;
     }
-    
+
     updateProgress(0, "Initializing audio streaming...");
-    this.audioPlayer.setTotalChunks(text.length / 300);
-    this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed });
+    this.audioPlayer.setTotalChunks(text.length / 300); // rough estimate
+    this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed }); // Pass speed
   }
   
-  // --- DOWNLOAD (Dispatcher Logic) ---
   async handleDiskButtonClick() {
-    if (this.isStreaming) { // Use this button as a STOP button
-      this.resetStreamingState();
+    if (this.isStreaming) {
       this.worker.postMessage({ type: "stop" });
       await this.audioDiskSaver.stopSave();
+      this.resetStreamingState();
       updateProgress(100, "Disk save stopped");
       return;
     }
@@ -67,104 +122,67 @@ export class ButtonHandler {
     this.setStreamingState("disk");
 
     try {
+      updateProgress(0, "Preparing to save audio...");
       await this.audioDiskSaver.initSave(); 
 
-      const { text: fullText } = this.getTtsOptions();
-      if (fullText.trim().length === 0) {
+      const { text, voice, speed } = this.getTtsOptions();
+      if (text.trim().length === 0) {
         this.resetStreamingState();
         return;
       }
-      
-      // --- SPLIT TEXT INTO CHUNKS AND START THE PROCESS ---
-      this.textQueue = this.splitText(fullText, CHUNK_SIZE);
-      this.currentChunkIndex = 0;
-      this.processNextChunk();
-      // --- END ---
 
+      this.audioDiskSaver.setTotalChunks(text.length / 100); 
+      updateProgress(0, "Processing audio for saving...");
+      this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed }); // Pass speed
     } catch (error) {
       console.error("Error initializing disk save:", error);
-      updateProgress(100, "Error initializing file save!");
+      updateProgress(100, "File save error!");
       this.resetStreamingState();
     }
   }
 
-  // --- NEW FUNCTION TO FEED THE WORKER ---
-  processNextChunk() {
-    if (this.currentChunkIndex >= this.textQueue.length) {
-        // --- ALL CHUNKS ARE DONE ---
-        this.audioDiskSaver.finalizeSave().then(() => {
-            updateProgress(100, "File saved successfully!");
-            this.resetStreamingState();
-        });
-        return;
-    }
-    
-    const { voice, speed } = this.getTtsOptions();
-    const nextChunk = this.textQueue[this.currentChunkIndex];
-    
-    // Update progress bar based on text chunks
-    const progressPercent = (this.currentChunkIndex / this.textQueue.length) * 100;
-    updateProgress(progressPercent, `Processing chunk ${this.currentChunkIndex + 1} of ${this.textQueue.length}...`);
-
-    this.worker.postMessage({
-        type: "generate",
-        text: nextChunk,
-        voice: voice,
-        speed: speed
-    });
-
-    this.currentChunkIndex++;
-  }
-
-  // --- NEW HELPER TO SPLIT TEXT ---
-  splitText(text, length) {
-    const chunks = [];
-    for (let i = 0; i < text.length; i += length) {
-        chunks.push(text.substring(i, i + length));
-    }
-    return chunks;
-  }
-  
   // --- STATE MANAGEMENT ---
-  
   setStreamingState(mode) {
     this.isStreaming = true;
     this.mode = mode;
     
-    document.getElementById("streamAudioContext").disabled = true;
-    document.getElementById("streamDisk").disabled = true;
+    const streamBtn = document.getElementById("streamAudioContext");
+    const diskBtn = document.getElementById("streamDisk");
 
     if (mode === "stream") {
-      this.updateStreamButtonToStop();
+      this.showButtonContent(streamBtn, "loading");
+      streamBtn.disabled = false; // It's now a stop button
+      diskBtn.disabled = true;
     } else if (mode === "disk") {
-      this.updateDiskButtonToStop();
+      this.showButtonContent(diskBtn, "download-loading");
+      diskBtn.disabled = false; // It's now a stop button
+      streamBtn.disabled = true;
     }
-  }
-
-  resetStreamingState() {
-    this.isStreaming = false;
-    this.mode = "none";
-    this.textQueue = [];
-    this.currentChunkIndex = 0;
-    this.enableButtons();
-  }
-  
-  enableButtons() {
-    document.getElementById("streamAudioContext").disabled = false;
-    document.getElementById("streamDisk").disabled = false;
-    this.showButtonContent(document.getElementById("streamAudioContext"), "play");
-    this.showButtonContent(document.getElementById("streamDisk"), "download");
-  }
-
-  updateStreamButtonToStop() {
-    this.showButtonContent(document.getElementById("streamAudioContext"), "stop");
-    document.getElementById("streamAudioContext").disabled = false; // Make it a stop button
   }
   
   updateDiskButtonToStop() {
-    this.showButtonContent(document.getElementById("streamDisk"), "stop-download");
-    document.getElementById("streamDisk").disabled = false; // Make it a stop button
+    const diskBtn = document.getElementById("streamDisk");
+    if (diskBtn.classList.contains("loading")) {
+        diskBtn.disabled = false;
+        diskBtn.classList.remove("loading");
+        diskBtn.classList.add("stop-saving", "has-content");
+        this.showButtonContent(diskBtn, "stop-download");
+    }
   }
 
-  getMode() { return this.mode; }
+  getMode() {
+    return this.mode;
+  }
+
+  setMode(newMode) {
+    this.mode = newMode;
+  }
+
+  isCurrentlyStreaming() {
+    return this.isStreaming;
+  }
+
+  setStreaming(state) {
+    this.isStreaming = state;
+  }
 }
