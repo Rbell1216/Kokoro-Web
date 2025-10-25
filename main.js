@@ -95,33 +95,42 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
 
     case "stream_audio_data":
       if (buttonHandler.getMode() === "disk") {
-        await audioDiskSaver.addAudioChunk(e.data.audio);
+        const percent = await audioDiskSaver.addAudioChunk(e.data.audio);
+        updateProgress(percent, "Processing audio for saving...");
+        buttonHandler.updateDiskButtonToStop();
+        // Tell the worker it can send the next chunk
+        tts_worker.postMessage({ type: "buffer_processed" });
       } else if (buttonHandler.getMode() === "stream") {
+        buttonHandler.updateStreamButtonToStop();
+        // AudioPlayer will send its own "buffer_processed" message
         await audioPlayer.queueAudio(e.data.audio);
       }
-      // Regardless of mode, tell worker it's clear to process the next sentence
-      tts_worker.postMessage({ type: "buffer_processed" });
       break;
 
-    // --- THIS LOGIC IS MODIFIED ---
     case "complete":
-      // This now means the WORKER has finished its CURRENT CHUNK.
-      // We need to tell the ButtonHandler to send the NEXT chunk.
+      // This "complete" message means the worker has finished ALL sentences
       if (buttonHandler.getMode() === "disk") {
-        buttonHandler.processNextChunk(); // The key change!
+        try {
+          updateProgress(99, "Combining audio chunks...");
+          updateProgress(99.5, "Writing file to disk...");
+          await audioDiskSaver.finalizeSave();
+          updateProgress(100, "File saved successfully!");
+        } catch (error) {
+          console.error("Error combining audio chunks:", error);
+          updateProgress(100, "Error saving file!");
+        }
+        buttonHandler.resetStreamingState(); // Use the correct reset function
       } else if (buttonHandler.getMode() === "stream") {
-        // For streaming, "complete" still means the whole job is done.
-        buttonHandler.resetStreamingState();
+        buttonHandler.resetStreamingState(); // Use the correct reset function
         updateProgress(100, "Streaming complete");
       }
       break;
-    // --- END MODIFIED LOGIC ---
   }
 };
 
 const onErrorReceived = (e) => {
   console.error("Worker error:", e);
-  buttonHandler.resetStreamingState();
+  buttonHandler.resetStreamingState(); // Use the correct reset function
   updateProgress(100, "An error occurred! Please try again.");
 };
 
@@ -134,6 +143,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
 
+  // This block connects the speed slider label
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
   if (speedSlider && speedLabel) {
