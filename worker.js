@@ -22,8 +22,8 @@ if (self.location.hostname === "localhost2") {
 }
 
 const tts = await KokoroTTS.from_pretrained(model_id, {
-  dtype: device === "wasm" ? "q8" : "fp32",
-  device,
+  //dtype: device === "wasm" ? "q8" : "fp32", device,
+  dtype: "fp16",
   progress_callback: (progress) => {
     self.postMessage({ status: "loading_model_progress", progress });
   }
