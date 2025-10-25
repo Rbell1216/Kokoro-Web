@@ -107,10 +107,13 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
         const percent = await audioDiskSaver.addAudioChunk(e.data.audio);
         updateProgress(percent, "Processing audio for saving...");
         buttonHandler.updateDiskButtonToStop();
+        // --- THIS IS THE FIX ---
+        // Tell the worker it can send the next chunk
         tts_worker.postMessage({ type: "buffer_processed" });
+        // --- END FIX ---
       } else if (buttonHandler.getMode() === "stream") {
         buttonHandler.updateStreamButtonToStop();
-        // AudioPlayer just plays the audio it receives. Speed is already handled by the worker.
+        // AudioPlayer will send its own "buffer_processed" message
         await audioPlayer.queueAudio(e.data.audio);
       }
       break;
@@ -167,21 +170,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
 
-  // --- THIS IS THE MODIFIED BLOCK FOR THE LABEL ---
+  // This block connects the speed slider label
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
   if (speedSlider && speedLabel) {
-    // Set initial label text based on default value
     speedLabel.textContent = getRealSpeed(parseFloat(speedSlider.value)).toFixed(2);
-    
-    // Update label on input
     speedSlider.addEventListener('input', () => {
         const sliderValue = parseFloat(speedSlider.value);
         const realSpeed = getRealSpeed(sliderValue);
-        speedLabel.textContent = realSpeed.toFixed(2); // Show 2 decimal places
+        speedLabel.textContent = realSpeed.toFixed(2);
     });
   }
-  // --- END OF MODIFIED BLOCK ---
 });
 
 window.addEventListener("beforeunload", () => {
