@@ -38,27 +38,13 @@ export class ButtonHandler {
 
     let contentClass;
     switch (contentType) {
-        case 'play':
-            contentClass = '.play-content';
-            break;
-        case 'stop':
-            contentClass = '.stop-content';
-            break;
-        case 'loading':
-            contentClass = '.loading-content';
-            break;
-        case 'download':
-            contentClass = '.download-content';
-            break;
-        case 'download-loading':
-            contentClass = '.download-loading-content';
-            break;
-        case 'stop-download':
-            contentClass = '.stop-content';
-            break;
-        default:
-            console.error('Unknown content type:', contentType);
-            return;
+        case 'play': contentClass = '.play-content'; break;
+        case 'stop': contentClass = '.stop-content'; break;
+        case 'loading': contentClass = '.loading-content'; break;
+        case 'download': contentClass = '.download-content'; break;
+        case 'download-loading': contentClass = '.download-loading-content'; break;
+        case 'stop-download': contentClass = '.stop-content'; break;
+        default: console.error('Unknown content type:', contentType); return;
     }
 
     const contentToShow = button.querySelector(contentClass);
@@ -71,17 +57,12 @@ export class ButtonHandler {
     const streamBtn = document.getElementById("streamAudioContext");
     const diskBtn = document.getElementById("streamDisk");
 
-    if (this.isStreaming) {
-        return;
-    }
+    if (this.isStreaming) return;
+    
     streamBtn.disabled = false;
     diskBtn.disabled = false;
-
-    // Remove any state classes
     streamBtn.classList.remove("loading", "stop-streaming", "has-content");
     diskBtn.classList.remove("loading", "stop-saving", "has-content");
-
-    // Show play content, hide stop and loading content
     this.showButtonContent(streamBtn, "play");
     this.showButtonContent(diskBtn, "download");
   }
@@ -104,7 +85,6 @@ export class ButtonHandler {
     console.log("Button reset to play state");
   }
 
-  // --- THIS FUNCTION IS MODIFIED ---
   handleStreamButtonClick() {
     if (this.isStreaming) {
       this.mode = "none";
@@ -126,7 +106,6 @@ export class ButtonHandler {
     this.mode = "stream";
     this.isStreaming = true;
     
-    // Get all options, including speed
     const { text, voice, speed } = this.getTtsOptions();
     if (text.trim().length === 0) {
         this.resetStreamButton();
@@ -139,7 +118,6 @@ export class ButtonHandler {
     this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed }); // Pass speed
   }
   
-  // --- THIS FUNCTION IS MODIFIED ---
   async handleDiskButtonClick() {
     if (this.mode === "disk") {
       this.mode = "none";
@@ -161,13 +139,12 @@ export class ButtonHandler {
     diskBtn.disabled = true;
 
     this.mode = "disk";
-    this.isStreaming = true; // Set streaming to true for disk mode as well
+    this.isStreaming = true; 
 
     try {
       updateProgress(0, "Preparing to save audio...");
-      await this.audioDiskSaver.initSave(); // This now also reads the speed
+      await this.audioDiskSaver.initSave(); 
 
-      // Get all options, including speed
       const { text, voice, speed } = this.getTtsOptions();
       if (text.trim().length === 0) {
         this.resetDiskButton();
@@ -175,13 +152,13 @@ export class ButtonHandler {
         return;
       }
 
-      this.audioDiskSaver.setTotalChunks(text.length / 100); // rough estimate
+      this.audioDiskSaver.setTotalChunks(text.length / 100); 
       updateProgress(0, "Processing audio for saving...");
       this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed }); // Pass speed
     } catch (error) {
       console.error("Error initializing disk save:", error);
       updateProgress(100, "Error initializing file save!");
-      this.resetDiskButton(); // Reset on failure
+      this.resetDiskButton(); 
       document.getElementById("streamAudioContext").disabled = false;
       this.isStreaming = false;
       this.mode = "none";
