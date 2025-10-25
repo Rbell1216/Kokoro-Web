@@ -61,7 +61,10 @@ export class AudioPlayer {
         const percent = Math.min((this.processedAudioChunks / this.totalAudioChunks) * 100, 99);
         updateProgress(percent, "Processing text...");
 
+        // --- THIS IS THE FIX ---
+        // Tell the worker we've finished with this chunk and it can send another
         this.worker.postMessage({type: "buffer_processed"});
+        // --- END FIX ---
       }
     } catch (error) {
       console.error("Error during audio playback:", error);
