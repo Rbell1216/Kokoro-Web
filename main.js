@@ -20,17 +20,14 @@ if (window.location.hostname === "localhost") {
 let tts_worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 let audioPlayer = new AudioPlayer(tts_worker);
 let audioDiskSaver = new AudioDiskSaver();
-// --- MODIFIED: Pass the getRealSpeed function to the ButtonHandler ---
 let buttonHandler = new ButtonHandler(tts_worker, audioPlayer, audioDiskSaver, getRealSpeed);
 
 function populateVoiceSelector(voices) {
   const voiceSelector = document.getElementById("voiceSelector");
-  // Clear any existing options
   while (voiceSelector.options.length > 0) {
     voiceSelector.remove(0);
   }
 
-  // Group voices by category (based on prefix) and gender
   const voiceGroups = {};
   let heartVoice = null;
 
@@ -47,17 +44,13 @@ function populateVoiceSelector(voices) {
     voiceGroups[groupKey].push({ id, name: voice.name, language: voice.language });
   }
 
-  // Sort groups alphabetically
   const sortedGroups = Object.keys(voiceGroups).sort();
 
-  // Add optgroups and options
   for (const groupKey of sortedGroups) {
     const [category, gender] = groupKey.split(' - ');
     const optgroup = document.createElement('optgroup');
     optgroup.label = `${gender} Voices (${category.toUpperCase()})`;
-    // Sort voices within the group by name
     voiceGroups[groupKey].sort((a, b) => a.name.localeCompare(b.name));
-    // If this is the AF Female group, insert Heart at the top
     if (category === "af" && gender === "Female" && heartVoice) {
       const option = document.createElement('option');
       option.value = heartVoice.id;
@@ -69,7 +62,6 @@ function populateVoiceSelector(voices) {
       const option = document.createElement('option');
       option.value = voice.id;
       option.textContent = `${voice.name} (${voice.language})`;
-      // If Heart wasn't found, select the first option
       if (!heartVoice && voiceSelector.options.length === 0) {
         option.selected = true;
       }
@@ -90,7 +82,6 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
       buttonHandler.enableButtons();
       updateProgress(100, "Model loaded successfully");
       
-      // Populate voice selector if voices are available
       if (e.data.voices) {
         populateVoiceSelector(e.data.voices);
       }
@@ -104,61 +95,34 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
 
     case "stream_audio_data":
       if (buttonHandler.getMode() === "disk") {
-        const percent = await audioDiskSaver.addAudioChunk(e.data.audio);
-        updateProgress(percent, "Processing audio for saving...");
-        buttonHandler.updateDiskButtonToStop();
-        // --- THIS IS THE FIX ---
-        // Tell the worker it can send the next chunk
-        tts_worker.postMessage({ type: "buffer_processed" });
-        // --- END FIX ---
+        await audioDiskSaver.addAudioChunk(e.data.audio);
       } else if (buttonHandler.getMode() === "stream") {
-        buttonHandler.updateStreamButtonToStop();
-        // AudioPlayer will send its own "buffer_processed" message
         await audioPlayer.queueAudio(e.data.audio);
       }
+      // Regardless of mode, tell worker it's clear to process the next sentence
+      tts_worker.postMessage({ type: "buffer_processed" });
       break;
 
+    // --- THIS LOGIC IS MODIFIED ---
     case "complete":
+      // This now means the WORKER has finished its CURRENT CHUNK.
+      // We need to tell the ButtonHandler to send the NEXT chunk.
       if (buttonHandler.getMode() === "disk") {
-        try {
-          updateProgress(99, "Combining audio chunks...");
-          updateProgress(99.5, "Writing file to disk...");
-          await audioDiskSaver.finalizeSave();
-          updateProgress(100, "File saved successfully!");
-        } catch (error) {
-          console.error("Error combining audio chunks:", error);
-          updateProgress(100, "Error saving file!");
-        }
-        buttonHandler.setMode("none");
-        buttonHandler.resetDiskButton();
-        document.getElementById("streamAudioContext").disabled = false;
+        buttonHandler.processNextChunk(); // The key change!
       } else if (buttonHandler.getMode() === "stream") {
-        buttonHandler.setStreaming(false);
-        buttonHandler.setMode("none");
+        // For streaming, "complete" still means the whole job is done.
+        buttonHandler.resetStreamingState();
         updateProgress(100, "Streaming complete");
-        buttonHandler.resetStreamButton();
-        document.getElementById("streamDisk").disabled = false;
-      } else {
-        buttonHandler.enableButtons();
       }
       break;
+    // --- END MODIFIED LOGIC ---
   }
 };
 
 const onErrorReceived = (e) => {
   console.error("Worker error:", e);
-  const currentMode = buttonHandler.getMode();
-  buttonHandler.setStreaming(false);
-  buttonHandler.setMode("none");
+  buttonHandler.resetStreamingState();
   updateProgress(100, "An error occurred! Please try again.");
-  
-  if (currentMode === "disk") {
-    buttonHandler.resetDiskButton();
-    document.getElementById("streamAudioContext").disabled = false;
-  } else {
-    buttonHandler.resetStreamButton();
-    document.getElementById("streamDisk").disabled = false;
-  }
 };
 
 tts_worker.addEventListener("message", onMessageReceived);
@@ -170,7 +134,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
 
-  // This block connects the speed slider label
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
   if (speedSlider && speedLabel) {
