@@ -141,9 +141,9 @@ const onMessageReceived = async (e) => {
           try {
             const jobDetails = await queueManager.getJobDetails(currentQueueJobId);
             
-            if (jobDetails) {
+            if (jobDetails && typeof jobDetails.text === 'string') {
               const textLength = jobDetails.text.length;
-              const wordsLength = textLength.split(' ').length;
+              const wordsLength = jobDetails.text.split(' ').length;
               
               // Calculate estimation based on text characteristics
               // More generous estimates for semantic-split.js chunking
@@ -161,6 +161,7 @@ const onMessageReceived = async (e) => {
               
               console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${wordsLength} words → est. ${currentJobEstimation} chunks`);
             } else {
+              console.warn(`Job ${currentQueueJobId}: Invalid job details or non-string text`);
               // Fallback estimation
               currentJobEstimation = Math.max(10, Math.ceil(chunkNum * 1.5));
             }
@@ -248,6 +249,13 @@ const onMessageReceived = async (e) => {
 
 const onErrorReceived = (e) => {
   console.error("Worker error:", e);
+  
+  // Check for WebGPU buffer errors
+  if (e.message && e.message.includes('GPUBuffer')) {
+    console.warn("WebGPU buffer error detected. This may be due to page refresh or context loss.");
+    updateProgress(100, "WebGPU context lost. Please refresh and try again.");
+    return;
+  }
   
   // Handle queue job error
   if (currentQueueJobId) {
