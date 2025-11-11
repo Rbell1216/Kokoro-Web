@@ -29,24 +29,35 @@ const device = await detectWebGPU() ? "webgpu" : "wasm";
 self.postMessage({ status: "loading_model_start", device });
 
 let model_id = "onnx-community/Kokoro-82M-v1.0-ONNX";
+let useWasmFallback = false;
 
 if (self.location.hostname === "localhost2") {
   env.allowLocalModels = true;
   model_id = "./my_model/";
 }
 
-const tts = await KokoroTTS.from_pretrained(model_id, {
-  dtype: device === "wasm" ? "q8" : "fp32", device,
-  //dtype: "fp16",
-  progress_callback: (progress) => {
-    self.postMessage({ status: "loading_model_progress", progress });
-  }
-}).catch((e) => {
-  self.postMessage({ status: "error", error: e.message });
-  throw e;
-});
+let tts = null;
+try {
+  tts = await KokoroTTS.from_pretrained(model_id, {
+    dtype: device === "wasm" ? "q8" : "fp32", device,
+    //dtype: "fp16",
+    progress_callback: (progress) => {
+      self.postMessage({ status: "loading_model_progress", progress });
+    }
+  });
+} catch (initialError) {
+  console.warn("Failed to load model with WebGPU, falling back to WASM:", initialError.message);
+  useWasmFallback = true;
+  tts = await KokoroTTS.from_pretrained(model_id, {
+    dtype: "q8",
+    device: "wasm",
+    progress_callback: (progress) => {
+      self.postMessage({ status: "loading_model_progress", progress });
+    }
+  });
+}
 
-self.postMessage({ status: "loading_model_ready", voices: tts.voices, device });
+self.postMessage({ status: "loading_model_ready", voices: tts.voices, device: useWasmFallback ? "wasm" : device });
 
 // --- THIS IS THE MEMORY-SAFE QUEUE LOGIC FOR SENTENCES WITHIN A CHUNK ---
 let bufferQueueSize = 0;
@@ -74,6 +85,9 @@ self.addEventListener("message", async (e) => {
     
     // This now splits only the SMALL chunk it was given
     let sentences = splitTextSmart(text, 300); 
+    let currentTTS = tts;
+    let webgpuRetryCount = 0;
+    const MAX_WEBGPU_RETRIES = 2;
 
     for (const sentence of sentences) {
       if (shouldStop) break;
@@ -84,23 +98,65 @@ self.addEventListener("message", async (e) => {
       }
       if (shouldStop) break;
       
-      try {
-        const audio = await tts.generate(sentence, { voice, speed }); 
+      let sentenceProcessed = false;
+      
+      for (let attempt = 0; attempt < (webgpuRetryCount < MAX_WEBGPU_RETRIES ? 2 : 1); attempt++) {
         if (shouldStop) break;
+        
+        try {
+          // Add timeout to prevent hanging
+          const audioPromise = currentTTS.generate(sentence, { voice, speed });
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Audio generation timeout')), 30000); // 30 second timeout
+          });
+          
+          const audio = await Promise.race([audioPromise, timeoutPromise]);
+          
+          if (shouldStop) break;
 
-        let ab = audio.audio.buffer;
-        bufferQueueSize++;
-        self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
-      } catch (audioError) {
-        if (audioError.message && audioError.message.includes('GPUBuffer')) {
-          console.error("WebGPU buffer error during audio generation:", audioError);
-          self.postMessage({ status: "error", error: "WebGPU buffer lost. Please try again." });
-          break;
-        } else {
-          console.error("Audio generation error:", audioError);
-          // Continue with next sentence for other errors
-          continue;
+          let ab = audio.audio.buffer;
+          bufferQueueSize++;
+          self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+          sentenceProcessed = true;
+          break; // Success, exit retry loop
+          
+        } catch (audioError) {
+          const isWebGPUError = audioError.message && 
+            (audioError.message.includes('GPUBuffer') || 
+             audioError.message.includes('webgpu') ||
+             audioError.name === 'AbortError');
+          
+          if (isWebGPUError && webgpuRetryCount < MAX_WEBGPU_RETRIES && !useWasmFallback) {
+            console.warn(`WebGPU error on attempt ${attempt + 1}, retrying with WASM:`, audioError.message);
+            webgpuRetryCount++;
+            // Switch to WASM for this sentence
+            try {
+              if (!currentTTS._wasmFallback) {
+                currentTTS._wasmFallback = await KokoroTTS.from_pretrained(model_id, {
+                  dtype: "q8",
+                  device: "wasm"
+                });
+              }
+              currentTTS = currentTTS._wasmFallback;
+            } catch (fallbackError) {
+              console.error("Failed to initialize WASM fallback:", fallbackError);
+              break; // Exit retry loop on fallback failure
+            }
+          } else if (attempt === 0) {
+            console.error("Audio generation error:", audioError);
+            // Try to continue with next sentence for non-WebGPU errors
+            break;
+          } else {
+            console.error("All retry attempts failed for sentence:", sentence.substring(0, 100) + "...");
+            break;
+          }
         }
+      }
+      
+      // If sentence processing failed completely, continue with next sentence
+      if (!sentenceProcessed) {
+        console.warn("Skipping failed sentence, continuing with next one");
+        continue;
       }
     }
 
