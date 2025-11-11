@@ -33,7 +33,10 @@ if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
   }
 }
 
-let tts_worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+// Force cache invalidation by adding timestamp
+const workerUrl = new URL("./worker.js", import.meta.url);
+workerUrl.searchParams.set("v", Date.now());
+let tts_worker = new Worker(workerUrl, { type: "module" });
 let audioPlayer = new AudioPlayer(tts_worker);
 let audioDiskSaver = new AudioDiskSaver();
 let buttonHandler = new ButtonHandler(tts_worker, audioPlayer, audioDiskSaver, getRealSpeed);
