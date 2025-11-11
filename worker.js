@@ -1,5 +1,6 @@
+// worker.js - TTS Processing Engine
 import { KokoroTTS } from "./kokoro.js";
-import { env } from "./transformers.min.js";
+import { env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/dist/transformers.min.js";
 import { splitTextSmart } from "./semantic-split.js";
 
 async function detectWebGPU() {
