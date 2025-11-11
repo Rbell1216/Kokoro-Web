@@ -145,21 +145,39 @@ const onMessageReceived = async (e) => {
               const textLength = jobDetails.text.length;
               const wordsLength = jobDetails.text.split(' ').length;
               
-              // Calculate estimation based on text characteristics
-              // More generous estimates for semantic-split.js chunking
+              // Step 1: Count paragraphs like semantic-split.js does
+              const paragraphs = jobDetails.text.split(/\n\s*\n/);
+              let totalEstimatedChunks = 0;
+              
+              for (const paragraph of paragraphs) {
+                const paraLength = paragraph.length;
+                if (paraLength <= 300) {
+                  // Short paragraph (≤300 chars) = 1 chunk
+                  totalEstimatedChunks += 1;
+                } else if (paraLength <= 1200) {
+                  // Medium paragraph (301-1200 chars) = ~3 chunks
+                  totalEstimatedChunks += Math.ceil(paraLength / 500);
+                } else {
+                  // Long paragraph (>1200 chars) = ~6 chunks
+                  totalEstimatedChunks += Math.ceil(paraLength / 450);
+                }
+              }
+              
+              // Apply realistic bounds - Hemingway story had 1 paragraph of 7557 chars
+              // Should estimate ~17 chunks (7557/450 = ~17), not 200!
               let estimatedTotalChunks;
-              if (textLength < 500) {
-                estimatedTotalChunks = Math.max(6, Math.ceil(wordsLength * 1.8)); // Short text - more generous
-              } else if (textLength < 2000) {
-                estimatedTotalChunks = Math.max(10, Math.ceil(wordsLength * 2.2)); // Medium text - more generous
+              if (totalEstimatedChunks <= 5) {
+                estimatedTotalChunks = Math.max(3, totalEstimatedChunks);
+              } else if (totalEstimatedChunks <= 20) {
+                estimatedTotalChunks = Math.max(6, totalEstimatedChunks);
               } else {
-                estimatedTotalChunks = Math.max(15, Math.ceil(wordsLength * 2.8)); // Long text - more generous
+                estimatedTotalChunks = Math.min(totalEstimatedChunks, 30); // Never exceed 30 chunks
               }
               
               // Ensure reasonable bounds
-              currentJobEstimation = Math.min(Math.max(estimatedTotalChunks, 12), 200);
+              currentJobEstimation = Math.max(estimatedTotalChunks, 3);
               
-              console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${wordsLength} words → est. ${currentJobEstimation} chunks`);
+              console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${paragraphs.length} paragraphs → est. ${currentJobEstimation} chunks (was ${Math.ceil(wordsLength * 2.8)} based on old formula)`);
             } else {
               console.warn(`Job ${currentQueueJobId}: Invalid job details or non-string text`);
               // Fallback estimation
