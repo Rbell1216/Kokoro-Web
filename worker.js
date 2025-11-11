@@ -83,6 +83,12 @@ self.addEventListener("message", async (e) => {
   if (type === "generate" && text) { 
     shouldStop = false;
     
+    // CRITICAL FIX: Ensure valid voice ID is used
+    if (!voice || !tts.voices[voice]) {
+      console.warn(`Invalid voice "${voice}", defaulting to "af_heart". Available voices:`, Object.keys(tts.voices));
+      voice = "af_heart"; // Default to a known good voice
+    }
+    
     // MINIMAL FIX ONLY: Reduced chunk size from 800 to 250 for better reliability
     let sentences = splitTextSmart(text, 250); // 250 instead of 800 - targets successful 112-char range
     let currentTTS = tts;
