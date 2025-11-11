@@ -33,7 +33,7 @@ if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
   }
 }
 
-let tts_worker = new Worker(new URL("./worker_small_chunks.js", import.meta.url), { type: "module" });
+let tts_worker = new Worker(new URL("./worker_minimal_fix.js", import.meta.url), { type: "module" });
 let audioPlayer = new AudioPlayer(tts_worker);
 let audioDiskSaver = new AudioDiskSaver();
 let buttonHandler = new ButtonHandler(tts_worker, audioDiskSaver, getRealSpeed);
@@ -175,17 +175,21 @@ const onMessageReceived = async (e) => {
 
     case "chunk_progress":
       // CRITICAL FIX: Update dynamic progress estimation based on actual chunk processing
-      if (currentQueueJobId && e.data.successfulChunks !== undefined) {
-        const successfulChunks = e.data.successfulChunks;
-        const totalChunks = e.data.totalChunks || chunks.length;
+      if (currentQueueJobId && e.data.sentencesInChunk) {
+        const actualChunksPerChunk = e.data.sentencesInChunk;
         
-        // Update progress with actual successful chunks
-        const percent = Math.min((successfulChunks / totalChunks) * 100, 98);
-        await queueManager.updateJobProgress(currentQueueJobId, percent, successfulChunks, totalChunks);
-        
-        const chunkInfo = window._queueRemainingChunks;
-        if (chunkInfo) {
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${successfulChunks}/${totalChunks} chunks (${Math.round(percent)}%)`);
+        // Update current job estimation if significantly different
+        if (currentJobEstimation && Math.abs(currentJobEstimation - actualChunksPerChunk) > 3) {
+          console.log(`Dynamic estimation adjustment: ${currentJobEstimation} → ${actualChunksPerChunk} sentences per chunk`);
+          currentJobEstimation = actualChunksPerChunk;
+          
+          // Update job progress with new estimation
+          if (window._queueRemainingChunks) {
+            const currentChunks = window._queueRemainingChunks.current;
+            const totalChunks = Math.ceil(window._queueRemainingChunks.total * (window._queueRemainingChunks.totalChunks || 1));
+            const percent = Math.min((currentChunks / totalChunks) * 100, 98);
+            await queueManager.updateJobProgress(currentQueueJobId, percent, currentChunks, totalChunks);
+          }
         }
       }
       break;
@@ -306,9 +310,9 @@ window.addEventListener('queue-process-job', async (event) => {
   audioChunksForQueue = [];
   currentJobEstimation = null; // Reset estimation for new job
   
-  // OPTIMIZED: Use smaller chunks (250 chars) for better reliability
+  // MINIMAL FIX: Use smaller chunks (250 chars instead of 400)
   try {
-    // Use semantic-split with smaller chunk size to prevent tensor errors
+    // Use semantic-split with smaller chunk size
     const chunks = await import('./semantic-split.js').then(m => m.splitTextSmart(text, 250));
     
     console.log(`Processing ${chunks.length} small chunks for job ${jobId}`);
