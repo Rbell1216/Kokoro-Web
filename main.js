@@ -296,6 +296,9 @@ const onErrorReceived = (e) => {
 tts_worker.addEventListener("message", onMessageReceived);
 tts_worker.addEventListener("error", onErrorReceived);
 
+// Initialize the TTS model
+tts_worker.postMessage({ command: "init" });
+
 // ===== QUEUE EVENT HANDLERS =====
 
 // Process queue job
