@@ -352,7 +352,7 @@ window.downloadQueueJob = async function(jobId) {
   const audioData = await queueManager.getAudioData(jobId);
   
   if (audioData && audioData.chunks) {
-    // Combine chunks and save as WAV
+    // Try File System Access API first
     try {
       await audioDiskSaver.initSave();
       
@@ -364,12 +364,93 @@ window.downloadQueueJob = async function(jobId) {
       updateProgress(100, "Download complete!");
     } catch (error) {
       console.error('Download error:', error);
-      alert('Download failed: ' + error.message);
+      
+      // Handle user cancellation more gracefully
+      if (error.message && (error.message.includes('user aborted') || error.message.includes('abort'))) {
+        console.log('User cancelled the file save dialog, trying alternative download...');
+        
+        // Fallback: create a blob and download it
+        await downloadAsBlob(jobId, audioData.chunks);
+      } else {
+        // For other errors, try the blob method as fallback
+        console.log('File save failed, trying alternative download...');
+        await downloadAsBlob(jobId, audioData.chunks);
+      }
     }
   } else {
     alert('No audio data found for this job');
   }
 };
+
+// Alternative download method using blob URLs
+async function downloadAsBlob(jobId, chunks) {
+  try {
+    updateProgress(0, "Creating audio file...");
+    
+    // Combine chunks into a single array
+    const samples = [];
+    for (const chunk of chunks) {
+      const chunkArray = new Float32Array(chunk);
+      for (let i = 0; i < chunkArray.length; i++) {
+        samples.push(chunkArray[i]);
+      }
+    }
+    const allSamples = new Float32Array(samples);
+    
+    // Create WAV header
+    const numChannels = 1;
+    const sampleRate = 24000;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = allSamples.length * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+    
+    // WAV header
+    const writeString = (offset, string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+    
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, dataSize, true);
+    
+    // Write audio data
+    for (let i = 0; i < allSamples.length; i++) {
+      const sample = Math.max(-1, Math.min(1, allSamples[i]));
+      view.setInt16(44 + i * 2, sample * 0x7FFF, true);
+    }
+    
+    // Create blob and download
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tts_audio_${jobId}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    updateProgress(100, "Download complete!");
+  } catch (error) {
+    console.error('Blob download error:', error);
+    alert('Download failed: ' + error.message);
+  }
+}
 
 window.deleteQueueJob = async function(jobId) {
   if (confirm(`Delete job #${jobId}?`)) {
