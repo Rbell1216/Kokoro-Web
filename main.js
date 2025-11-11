@@ -6,16 +6,13 @@ import { BackgroundQueueManager } from "./BackgroundQueueManager.js";
 
 // --- Helper function to remap the slider value ---
 function getRealSpeed(sliderValue) {
-  // Linearly maps slider range [0.5, 2.0] to real speed range [0.75, 1.5]
   return 0.5 * sliderValue + 0.5;
 }
 
-// Register service worker for HTTPS (GitHub Pages)
+// Register service worker
 if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
   navigator.serviceWorker.register("./service-worker.js").then((registration) => {
     console.log("Service Worker registered:", registration);
-    
-    // Register background sync if supported
     if ('sync' in registration) {
       console.log('Background Sync API supported');
     } else {
@@ -25,7 +22,6 @@ if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
     console.warn("Service Worker registration failed:", err);
   });
 } else if (window.location.hostname === "localhost") {
-  // For localhost testing
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./service-worker.js").then(() => {
       console.log("Service Worker registered.");
@@ -43,7 +39,8 @@ let queueManager = new BackgroundQueueManager();
 let currentQueueJobId = null;
 let currentQueueMode = null;
 let audioChunksForQueue = [];
-let currentJobEstimation = null; // Store the chunk estimation for current job
+let currentJobEstimation = null;
+let totalChunksForJob = 0; // Track total expected chunks
 
 function populateVoiceSelector(voices) {
   const voiceSelector = document.getElementById("voiceSelector");
@@ -115,8 +112,6 @@ const onMessageReceived = async (e) => {
       if (stats.queued > 0 || stats.processing > 0) {
         console.log(`Found ${stats.queued + stats.processing} pending jobs in queue`);
         updateQueueUI();
-        
-        // Start processing queue
         setTimeout(() => queueManager.processNextJob(), 1000);
       }
       break;
@@ -128,36 +123,20 @@ const onMessageReceived = async (e) => {
       break;
 
     case "stream_audio_data":
-      // Check if this is a queue job or manual job
       if (currentQueueJobId) {
         // Queue job - save chunks
         const audioData = new Float32Array(e.data.audio);
         audioChunksForQueue.push(audioData);
         
-        // CRITICAL FIX: Use consistent chunk tracking
         const chunkNum = audioChunksForQueue.length;
+        const totalChunks = totalChunksForJob || currentJobEstimation || window._queueRemainingChunks?.totalChunks || 10;
         
-        if (window._queueRemainingChunks) {
-          const chunkInfo = window._queueRemainingChunks;
-          // Use totalChunks for consistency (fixed the undefined issue)
-          const totalChunks = chunkInfo.totalChunks || chunkInfo.total || currentJobEstimation || 10;
-          
-          // Use chunk count for progress calculation
-          const percent = Math.min((chunkNum / totalChunks) * 100, 98); // Cap at 98% until truly complete
-          
-          await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, totalChunks);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${totalChunks} chunks (${Math.round(percent)}%)`);
-        } else if (currentJobEstimation) {
-          // Fallback to old estimation method
-          const percent = Math.min((chunkNum / currentJobEstimation) * 100, 98);
-          await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, currentJobEstimation);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${currentJobEstimation} chunks (${Math.round(percent)}%)`);
-        } else {
-          // Final fallback
-          const fallbackEstimation = Math.max(5, Math.ceil(chunkNum * 1.2));
-          const percent = Math.min((chunkNum / fallbackEstimation) * 100, 98);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${fallbackEstimation} chunks (${Math.round(percent)}%)`);
-        }
+        const percent = Math.min((chunkNum / totalChunks) * 100, 99); // Cap at 99% until truly complete
+        
+        await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, totalChunks);
+        updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${totalChunks} chunks (${Math.round(percent)}%)`);
+        
+        console.log(`Audio chunk ${chunkNum}/${totalChunks} received for job ${currentQueueJobId}`);
         
         tts_worker.postMessage({ type: "buffer_processed" });
       } else {
@@ -175,84 +154,44 @@ const onMessageReceived = async (e) => {
       break;
 
     case "chunk_progress":
-      // CRITICAL FIX: Update dynamic progress estimation based on actual chunk processing
+      // Update total chunks tracking
       if (currentQueueJobId && e.data.sentencesInChunk) {
-        const actualChunksPerChunk = e.data.sentencesInChunk;
-        
-        // Update current job estimation if significantly different
-        if (currentJobEstimation && Math.abs(currentJobEstimation - actualChunksPerChunk) > 3) {
-          console.log(`Dynamic estimation adjustment: ${currentJobEstimation} → ${actualChunksPerChunk} sentences per chunk`);
-          currentJobEstimation = actualChunksPerChunk;
-          
-          // Update job progress with new estimation
-          if (window._queueRemainingChunks) {
-            const currentChunks = window._queueRemainingChunks.current;
-            const totalChunks = Math.ceil(window._queueRemainingChunks.total * (window._queueRemainingChunks.totalChunks || 1));
-            const percent = Math.min((currentChunks / totalChunks) * 100, 98);
-            await queueManager.updateJobProgress(currentQueueJobId, percent, currentChunks, totalChunks);
-          }
-        }
+        // This is for chunk-level progress, update our tracking
+        console.log(`Processing chunk with ${e.data.sentencesInChunk} sentences`);
       }
       break;
 
     case "complete":
       if (currentQueueJobId) {
-        // Check if we have remaining chunks to process
-        if (window._queueRemainingChunks && 
-            window._queueRemainingChunks.jobId === currentQueueJobId && 
-            window._queueRemainingChunks.remaining.length > 0) {
-          
-          // Process next chunk automatically
-          const chunkInfo = window._queueRemainingChunks;
-          const nextChunk = chunkInfo.remaining.shift();
-          const currentIndex = chunkInfo.current;
-          const totalChunks = chunkInfo.totalChunks || chunkInfo.total; // Use totalChunks for consistency
-          
-          console.log(`Processing chunk ${currentIndex + 1}/${totalChunks}: "${nextChunk.substring(0, 50)}..."`);
-          
-          // Send next chunk to worker
-          tts_worker.postMessage({ 
-            type: "generate", 
-            text: nextChunk, 
-            voice: chunkInfo.voice, 
-            speed: chunkInfo.speed 
-          });
-          
-          chunkInfo.current++;
-          updateProgress(Math.round((currentIndex / totalChunks) * 100), 
-                         `Processing queue job ${currentQueueJobId} (${currentIndex + 1}/${totalChunks} chunks)...`);
-          
-        } else {
-          // All chunks processed, job complete
-          const finalChunkNum = audioChunksForQueue.length;
-          
-          console.log(`Queue job ${currentQueueJobId} complete with ${finalChunkNum} chunks`);
-          
-          // Use consistent naming for total chunks
-          const finalEstimation = window._queueRemainingChunks?.totalChunks || 
-                                window._queueRemainingChunks?.total || 
-                                currentJobEstimation || 
-                                finalChunkNum;
-          await queueManager.updateJobProgress(currentQueueJobId, 100, finalChunkNum, finalEstimation);
-          
-          // Mark job as complete with audio data
+        const successfulChunks = audioChunksForQueue.length;
+        const totalExpected = totalChunksForJob || window._queueRemainingChunks?.totalChunks || currentJobEstimation || 0;
+        
+        console.log(`Job ${currentQueueJobId} complete: ${successfulChunks}/${totalExpected} chunks successful`);
+        
+        // Only mark as complete if we have meaningful audio data
+        if (successfulChunks > 0) {
+          await queueManager.updateJobProgress(currentQueueJobId, 100, successfulChunks, totalExpected);
           await queueManager.jobComplete(currentQueueJobId, audioChunksForQueue, true);
-          
-          // Reset queue job tracking
-          currentQueueJobId = null;
-          currentQueueMode = null;
-          audioChunksForQueue = [];
-          currentJobEstimation = null;
-          
-          // Clear remaining chunks
-          window._queueRemainingChunks = null;
-          
-          updateQueueUI();
-          updateProgress(100, "Queue job complete!");
+          updateProgress(100, `Queue job complete! (${successfulChunks}/${totalExpected} chunks)`);
+        } else {
+          // No audio chunks were successful
+          console.warn(`Job ${currentQueueJobId} failed - no successful chunks`);
+          await queueManager.jobComplete(currentQueueJobId, null, false);
+          updateProgress(100, `Queue job failed - no successful chunks`);
         }
         
+        // Reset tracking
+        currentQueueJobId = null;
+        currentQueueMode = null;
+        audioChunksForQueue = [];
+        currentJobEstimation = null;
+        totalChunksForJob = 0;
+        window._queueRemainingChunks = null;
+        
+        updateQueueUI();
+        
       } else {
-        // Manual job complete - use existing logic
+        // Manual job complete
         if (buttonHandler.getMode() === "disk") {
           try {
             updateProgress(99, "Combining audio chunks...");
@@ -276,13 +215,13 @@ const onMessageReceived = async (e) => {
 const onErrorReceived = (e) => {
   console.error("Worker error:", e);
   
-  // Handle queue job error
   if (currentQueueJobId) {
     queueManager.jobComplete(currentQueueJobId, null, false);
     currentQueueJobId = null;
     currentQueueMode = null;
     audioChunksForQueue = [];
     currentJobEstimation = null;
+    totalChunksForJob = 0;
   }
   
   buttonHandler.resetStreamingState();
@@ -300,30 +239,29 @@ window.addEventListener('queue-process-job', async (event) => {
   
   console.log(`Processing queue job ${jobId} in ${mode} mode`);
   
-  // Set current queue job tracking
   currentQueueJobId = jobId;
   currentQueueMode = mode;
   audioChunksForQueue = [];
   currentJobEstimation = null;
+  totalChunksForJob = 0;
   
-  // OPTIMIZED CHUNKING: Use 800 characters consistently for better performance
   try {
-    // Use semantic-split with 800 character chunks for consistency with worker
-    const chunks = await import('./semantic-split.js').then(m => m.splitTextSmart(text, 800));
+    // Use the improved chunking approach that matches the worker
+    const chunks = chunkTextBetter(text, 400, 800);
     
     console.log(`Processing ${chunks.length} chunks for job ${jobId}`);
     
     if (chunks.length === 0) {
-      // Handle empty text case
       await queueManager.jobComplete(jobId, null, false);
       updateProgress(100, "No text to process");
       return;
     }
     
-    // Estimate sentences based on actual chunk processing
+    totalChunksForJob = chunks.length;
+    
+    // Calculate estimated sentences
     let totalEstimatedSentences = 0;
     for (const chunk of chunks) {
-      // Better estimation: assume ~150 chars per sentence on average
       const sentenceCount = Math.max(1, Math.ceil(chunk.length / 150));
       totalEstimatedSentences += sentenceCount;
     }
@@ -331,26 +269,25 @@ window.addEventListener('queue-process-job', async (event) => {
     console.log(`Estimated ${totalEstimatedSentences} total sentences for ${chunks.length} chunks`);
     currentJobEstimation = totalEstimatedSentences;
     
-    // CRITICAL FIX: Use consistent property naming (totalChunks instead of total)
+    // Store chunk info
     window._queueRemainingChunks = {
       jobId,
       remaining: chunks,
       voice,
       speed,
       current: 0,
-      total: chunks.length,      // For backward compatibility
-      totalChunks: chunks.length, // Use this for UI consistency
-      totalSentences: totalEstimatedSentences,
-      processedSentences: 0
+      total: chunks.length,
+      totalChunks: chunks.length,
+      totalSentences: totalEstimatedSentences
     };
     
-    // Process first chunk immediately
-    const firstChunk = chunks[0];
-    console.log(`Processing first chunk: "${firstChunk.substring(0, 50)}..."`);
+    // Process the entire text as one batch (the worker will handle chunking)
+    const fullText = chunks.join(' ');
+    console.log(`Processing full text (${fullText.length} characters) for job ${jobId}`);
     
     tts_worker.postMessage({ 
       type: "generate", 
-      text: firstChunk, 
+      text: fullText, 
       voice: voice, 
       speed: speed 
     });
@@ -358,8 +295,7 @@ window.addEventListener('queue-process-job', async (event) => {
     updateProgress(0, `Processing queue job ${jobId} (0/${chunks.length} chunks)...`);
     
   } catch (error) {
-    console.error("Error splitting text into chunks:", error);
-    // Fallback: send entire text as single chunk
+    console.error("Error processing queue job:", error);
     tts_worker.postMessage({ 
       type: "generate", 
       text: text, 
@@ -373,21 +309,45 @@ window.addEventListener('queue-process-job', async (event) => {
 // Show completed job
 window.addEventListener('queue-show-job', async (event) => {
   const { jobId } = event.detail;
-  
-  // Get audio data
   const audioData = await queueManager.getAudioData(jobId);
   
   if (audioData && audioData.chunks) {
     console.log(`Playing completed job ${jobId}`);
-    
-    // Play the audio chunks
     for (const chunk of audioData.chunks) {
       await audioPlayer.queueAudio(chunk);
     }
-    
     updateProgress(100, `Playing job ${jobId}`);
   }
 });
+
+// Better text chunking function to match worker
+function chunkTextBetter(text, minChars = 400, maxChars = 800) {
+  const sentences = text.split(/[.!?]+(?:\s+|$)/).filter(s => s.trim().length > 0);
+  const chunks = [];
+  let currentChunk = '';
+  
+  for (const sentence of sentences) {
+    const trimmedSentence = sentence.trim();
+    if (!trimmedSentence) continue;
+    
+    if (currentChunk && (currentChunk + '. ' + trimmedSentence).length > maxChars) {
+      if (currentChunk.length >= minChars) {
+        chunks.push(currentChunk.trim() + '.');
+        currentChunk = trimmedSentence;
+      } else {
+        currentChunk += (currentChunk ? '. ' : '') + trimmedSentence;
+      }
+    } else {
+      currentChunk += (currentChunk ? '. ' : '') + trimmedSentence;
+    }
+  }
+  
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim() + '.');
+  }
+  
+  return chunks;
+}
 
 // ===== QUEUE UI MANAGEMENT =====
 
@@ -399,12 +359,8 @@ async function updateQueueUI() {
   const stats = await queueManager.getQueueStats();
   const jobs = await queueManager.getAllJobs();
   
-  // Update stats
   queueStats.textContent = `${stats.queued} queued, ${stats.processing} processing, ${stats.complete} complete`;
   
-  // Queue container is always visible (removed hide/show logic for always-visible queue)
-  
-  // Build job list
   queueList.innerHTML = '';
   
   if (jobs.length === 0) {
@@ -492,11 +448,9 @@ async function updateQueueUI() {
 // Global functions for queue actions
 window.playQueueJob = async function(jobId) {
   const audioData = await queueManager.getAudioData(jobId);
-  
   if (audioData && audioData.chunks) {
     console.log(`Playing job ${jobId} with ${audioData.chunks.length} chunks`);
     updateProgress(0, `Playing job ${jobId}...`);
-    
     for (const chunk of audioData.chunks) {
       await audioPlayer.queueAudio(chunk);
     }
@@ -507,30 +461,19 @@ window.playQueueJob = async function(jobId) {
 
 window.downloadQueueJob = async function(jobId) {
   const audioData = await queueManager.getAudioData(jobId);
-  
   if (audioData && audioData.chunks) {
-    // Try File System Access API first
     try {
       await audioDiskSaver.initSave();
-      
       for (const chunk of audioData.chunks) {
         await audioDiskSaver.addAudioChunk(chunk);
       }
-      
       await audioDiskSaver.finalizeSave();
       updateProgress(100, "Download complete!");
     } catch (error) {
       console.error('Download error:', error);
-      
-      // Handle user cancellation more gracefully
       if (error.message && (error.message.includes('user aborted') || error.message.includes('abort'))) {
-        console.log('User cancelled the file save dialog, trying alternative download...');
-        
-        // Fallback: create a blob and download it
         await downloadAsBlob(jobId, audioData.chunks);
       } else {
-        // For other errors, try the blob method as fallback
-        console.log('File save failed, trying alternative download...');
         await downloadAsBlob(jobId, audioData.chunks);
       }
     }
@@ -539,12 +482,9 @@ window.downloadQueueJob = async function(jobId) {
   }
 };
 
-// Alternative download method using blob URLs
 async function downloadAsBlob(jobId, chunks) {
   try {
     updateProgress(0, "Creating audio file...");
-    
-    // Combine chunks into a single array
     const samples = [];
     for (const chunk of chunks) {
       const chunkArray = new Float32Array(chunk);
@@ -554,7 +494,6 @@ async function downloadAsBlob(jobId, chunks) {
     }
     const allSamples = new Float32Array(samples);
     
-    // Create WAV header
     const numChannels = 1;
     const sampleRate = 24000;
     const bytesPerSample = 2;
@@ -564,7 +503,6 @@ async function downloadAsBlob(jobId, chunks) {
     const buffer = new ArrayBuffer(44 + dataSize);
     const view = new DataView(buffer);
     
-    // WAV header
     const writeString = (offset, string) => {
       for (let i = 0; i < string.length; i++) {
         view.setUint8(offset + i, string.charCodeAt(i));
@@ -585,13 +523,11 @@ async function downloadAsBlob(jobId, chunks) {
     writeString(36, 'data');
     view.setUint32(40, dataSize, true);
     
-    // Write audio data
     for (let i = 0; i < allSamples.length; i++) {
       const sample = Math.max(-1, Math.min(1, allSamples[i]));
       view.setInt16(44 + i * 2, sample * 0x7FFF, true);
     }
     
-    // Create blob and download
     const blob = new Blob([buffer], { type: 'audio/wav' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -623,7 +559,6 @@ window.clearCompletedJobs = async function() {
 };
 
 window.refreshQueueDisplay = async function() {
-  // Add a small visual feedback for the refresh
   const refreshBtn = document.querySelector('.queue-btn-refresh');
   if (refreshBtn) {
     refreshBtn.style.opacity = '0.7';
@@ -631,11 +566,7 @@ window.refreshQueueDisplay = async function() {
       refreshBtn.style.opacity = '1';
     }, 200);
   }
-  
-  // Force refresh the queue display
   updateQueueUI();
-  
-  // Also refresh the queue stats
   const stats = await queueManager.getQueueStats();
   console.log('Queue refreshed:', stats);
 };
@@ -648,20 +579,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
 
-  // Initialize queue manager
   await queueManager.init();
-  
-  // Connect queue manager to button handler
   buttonHandler.setQueueManager(queueManager);
   queueManager.onQueueUpdate = updateQueueUI;
   queueManager.onJobComplete = (jobId, success) => {
     console.log(`Job ${jobId} completed: ${success}`);
   };
   
-  // Update queue UI
   updateQueueUI();
 
-  // Speed slider setup
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
   if (speedSlider && speedLabel) {
@@ -673,7 +599,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
   
-  // Add queue mode checkbox handler
   const queueModeCheckbox = document.getElementById('queueMode');
   if (queueModeCheckbox) {
     queueModeCheckbox.addEventListener('change', (e) => {
@@ -689,5 +614,4 @@ window.addEventListener("beforeunload", () => {
   audioPlayer.close();
 });
 
-// Export queue manager for debugging
 window.queueManager = queueManager;
