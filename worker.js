@@ -1,11 +1,10 @@
-// worker.js - TTS Processing Engine (WebGPU Only with Retry Logic)
+// worker.js - TTS Processing Engine (Fixed WebGPU Only with Better Text Handling)
 import { KokoroTTS } from "./kokoro.js";
 import { env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/dist/transformers.min.js";
 import { splitTextSmart } from "./semantic-split.js";
 
 async function detectWebGPU() {
   try {
-    // Check if WebGPU is supported
     if (!('gpu' in navigator)) {
       console.log("WebGPU not supported in this browser");
       throw new Error("WebGPU not supported");
@@ -30,7 +29,7 @@ try {
   useWebGPU = await detectWebGPU();
 } catch (error) {
   console.error("Failed to initialize WebGPU:", error.message);
-  throw error; // Don't fallback, just fail
+  throw error;
 }
 
 const device = "webgpu";
@@ -54,68 +53,49 @@ try {
   });
 } catch (initialError) {
   console.error("Failed to load model with WebGPU:", initialError.message);
-  throw initialError; // Don't fallback
+  throw initialError;
 }
 
 self.postMessage({ status: "loading_model_ready", voices: tts.voices, device: "webgpu" });
 
-// --- MEMORY-SAFE QUEUE LOGIC FOR SENTENCES WITHIN A CHUNK ---
+// --- MEMORY-SAFE QUEUE LOGIC ---
 let bufferQueueSize = 0;
 const MAX_QUEUE_SIZE = 6;
 let shouldStop = false;
-// --- END QUEUE LOGIC ---
 
-// Retry logic for WebGPU processing
-async function processWithRetry(sentence, voice, speed, maxRetries = 3) {
-  let lastError = null;
+// IMPROVED: Better text chunking function
+function chunkTextBetter(text, minChars = 400, maxChars = 800) {
+  // First split by sentences
+  const sentences = text.split(/[.!?]+(?:\s+|$)/).filter(s => s.trim().length > 0);
+  const chunks = [];
+  let currentChunk = '';
   
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    if (shouldStop) break;
+  for (const sentence of sentences) {
+    const trimmedSentence = sentence.trim();
+    if (!trimmedSentence) continue;
     
-    try {
-      // Add timeout for each sentence (25 seconds)
-      const audioPromise = tts.generate(sentence, { voice, speed });
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Audio generation timeout')), 25000);
-      });
-      
-      const audio = await Promise.race([audioPromise, timeoutPromise]);
-      
-      if (shouldStop) break;
-      
-      let ab = audio.audio.buffer;
-      bufferQueueSize++;
-      self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
-      
-      console.log(`Sentence processed successfully on attempt ${attempt}`);
-      return true; // Success
-      
-    } catch (audioError) {
-      lastError = audioError;
-      console.warn(`Audio generation attempt ${attempt} failed:`, audioError.message);
-      
-      // Check for critical errors that shouldn't be retried
-      if (audioError.message && audioError.message.includes('Session already started')) {
-        console.error("Session conflict detected, cannot retry");
-        throw audioError;
+    // If adding this sentence would exceed max, start a new chunk
+    if (currentChunk && (currentChunk + '. ' + trimmedSentence).length > maxChars) {
+      if (currentChunk.length >= minChars) {
+        chunks.push(currentChunk.trim() + '.');
+        currentChunk = trimmedSentence;
+      } else {
+        // Current chunk is too small, add sentence anyway
+        currentChunk += (currentChunk ? '. ' : '') + trimmedSentence;
       }
-      
-      // If this isn't the last attempt, clear buffers and wait
-      if (attempt < maxRetries) {
-        console.log(`Clearing buffers and retrying in 2 seconds (attempt ${attempt + 1}/${maxRetries})`);
-        
-        // Clear buffer queue to free up memory
-        bufferQueueSize = 0;
-        
-        // Wait 2 seconds before retry
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
+    } else {
+      // Add sentence to current chunk
+      currentChunk += (currentChunk ? '. ' : '') + trimmedSentence;
     }
   }
   
-  // All retries failed
-  console.error("All retry attempts failed, skipping sentence:", lastError.message);
-  throw lastError;
+  // Add final chunk if it has content
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim() + '.');
+  }
+  
+  console.log(`Text chunked into ${chunks.length} chunks, avg ${Math.round(text.length / chunks.length)} chars`);
+  return chunks;
 }
 
 self.addEventListener("message", async (e) => {
@@ -136,21 +116,21 @@ self.addEventListener("message", async (e) => {
   if (type === "generate" && text) { 
     shouldStop = false;
     
-    // Process 2-3 sentences per chunk for balanced speed and reliability
-    let sentences = splitTextSmart(text, 800); // Use same chunk size as main.js for consistency
+    // Use improved chunking instead of splitTextSmart
+    let sentences = chunkTextBetter(text, 400, 800);
 
-    console.log(`Processing ${sentences.length} sentences per chunk for better speed`);
+    console.log(`Processing ${sentences.length} chunks with improved text handling`);
     
-    // Report the total sentences being processed
+    // Report chunk info
     self.postMessage({ 
       status: "chunk_progress", 
       sentencesInChunk: sentences.length,
       totalEstimated: sentences.length
     });
     
-    // Wait for buffer space with timeout to prevent infinite wait
+    // Wait for buffer space
     let waitAttempts = 0;
-    const MAX_WAIT_ATTEMPTS = 60; // 30 seconds max wait
+    const MAX_WAIT_ATTEMPTS = 60;
     while (bufferQueueSize >= MAX_QUEUE_SIZE && !shouldStop && waitAttempts < MAX_WAIT_ATTEMPTS) {
       await new Promise(resolve => setTimeout(resolve, 500));
       waitAttempts++;
@@ -161,36 +141,60 @@ self.addEventListener("message", async (e) => {
       return;
     }
     
-    if (waitAttempts >= MAX_WAIT_ATTEMPTS) {
-      console.warn("Buffer queue timeout, proceeding anyway");
-    }
+    let successfulChunks = 0;
     
     for (let i = 0; i < sentences.length; i++) {
-      const sentence = sentences[i];
+      const chunk = sentences[i];
       if (shouldStop) break;
       
-      // Delay between sentences
+      // Delay between chunks
       if (i > 0) {
         await new Promise(resolve => setTimeout(resolve, 800));
       }
       
       try {
-        // Use retry logic instead of direct generation
-        await processWithRetry(sentence, voice, speed);
+        // Add validation for chunk content
+        if (!chunk || chunk.trim().length < 10) {
+          console.warn(`Skipping empty or too short chunk ${i + 1}`);
+          continue;
+        }
         
-        console.log(`Sentence ${i + 1}/${sentences.length} processed successfully`);
+        console.log(`Processing chunk ${i + 1}/${sentences.length} (${chunk.length} chars): "${chunk.substring(0, 50)}..."`);
+        
+        // Simple timeout for each chunk (30 seconds)
+        const audioPromise = tts.generate(chunk, { voice, speed });
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Audio generation timeout')), 30000);
+        });
+        
+        const audio = await Promise.race([audioPromise, timeoutPromise]);
+        
+        if (shouldStop) break;
+        
+        // Validate audio output
+        if (!audio || !audio.audio || !audio.audio.buffer || audio.audio.buffer.byteLength === 0) {
+          console.warn(`Invalid audio output for chunk ${i + 1}, skipping`);
+          continue;
+        }
+        
+        let ab = audio.audio.buffer;
+        bufferQueueSize++;
+        self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+        successfulChunks++;
+        
+        console.log(`Chunk ${i + 1}/${sentences.length} processed successfully (${successfulChunks}/${i + 1} total successful)`);
         
       } catch (audioError) {
-        // Continue to next sentence if this one fails
-        console.error(`Skipping sentence ${i + 1}/${sentences.length}:`, audioError.message);
+        console.warn(`Chunk ${i + 1} failed:`, audioError.message);
+        // Continue to next chunk
       }
     }
 
-    // Always send complete message to prevent hanging
-    console.log(`Chunk processing complete with ${sentences.length} sentences`);
+    console.log(`Chunk processing complete: ${successfulChunks}/${sentences.length} chunks successful`);
     self.postMessage({ 
       status: "complete",
-      processedSentences: sentences.length
+      processedSentences: sentences.length,
+      successfulChunks: successfulChunks
     });
   }
 });
