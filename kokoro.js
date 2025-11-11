@@ -1,5 +1,4 @@
-import { StyleTextToSpeech2Model, AutoTokenizer, Tensor, RawAudio } from "./transformers.min.js";
-
+import { StyleTextToSpeech2Model, AutoTokenizer, Tensor, RawAudio } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/dist/transformers.min.js";
 
 import { phonemize } from "./phonemize.js";
 import { getVoiceData, VOICES } from "./voices.js";
