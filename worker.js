@@ -5,9 +5,22 @@ import { splitTextSmart } from "./semantic-split.js";
 
 async function detectWebGPU() {
   try {
+    // Check if WebGPU is supported
+    if (!('gpu' in navigator)) {
+      console.log("WebGPU not supported in this browser, using WASM");
+      return false;
+    }
+    
     const adapter = await navigator.gpu.requestAdapter();
-    return !!adapter;
-  } catch (e) {
+    if (!adapter) {
+      console.log("No WebGPU adapter found, using WASM");
+      return false;
+    }
+    
+    console.log("WebGPU adapter found:", adapter.info.device || 'Unknown');
+    return true;
+  } catch (error) {
+    console.warn("WebGPU detection failed:", error.message, "using WASM");
     return false;
   }
 }
@@ -71,12 +84,24 @@ self.addEventListener("message", async (e) => {
       }
       if (shouldStop) break;
       
-      const audio = await tts.generate(sentence, { voice, speed }); 
-      if (shouldStop) break;
+      try {
+        const audio = await tts.generate(sentence, { voice, speed }); 
+        if (shouldStop) break;
 
-      let ab = audio.audio.buffer;
-      bufferQueueSize++;
-      self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+        let ab = audio.audio.buffer;
+        bufferQueueSize++;
+        self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+      } catch (audioError) {
+        if (audioError.message && audioError.message.includes('GPUBuffer')) {
+          console.error("WebGPU buffer error during audio generation:", audioError);
+          self.postMessage({ status: "error", error: "WebGPU buffer lost. Please try again." });
+          break;
+        } else {
+          console.error("Audio generation error:", audioError);
+          // Continue with next sentence for other errors
+          continue;
+        }
+      }
     }
 
     // When the loop finishes, this chunk is "complete"
