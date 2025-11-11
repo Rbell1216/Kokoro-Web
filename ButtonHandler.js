@@ -8,6 +8,7 @@ export class ButtonHandler {
     this.getRealSpeed = getRealSpeedFunc; 
     this.mode = "none";
     this.isStreaming = false;
+    this.queueManager = null; // Will be set externally
 
     this.handleStreamButtonClick = this.handleStreamButtonClick.bind(this);
     this.handleDiskButtonClick = this.handleDiskButtonClick.bind(this);
@@ -17,6 +18,10 @@ export class ButtonHandler {
     document.getElementById("streamAudioContext").addEventListener("click", this.handleStreamButtonClick);
     document.getElementById("streamDisk").addEventListener("click", this.handleDiskButtonClick);
   }
+  
+  setQueueManager(queueManager) {
+    this.queueManager = queueManager;
+  }
 
   getTtsOptions() {
     const text = document.getElementById("ta").value;
@@ -24,6 +29,11 @@ export class ButtonHandler {
     const sliderValue = parseFloat(document.getElementById('speed-slider').value);
     const speed = this.getRealSpeed(sliderValue); 
     return { text, voice, speed };
+  }
+  
+  isQueueModeEnabled() {
+    const queueModeCheckbox = document.getElementById("queueMode");
+    return queueModeCheckbox && queueModeCheckbox.checked;
   }
 
   showButtonContent(button, contentType) {
@@ -74,24 +84,43 @@ export class ButtonHandler {
   }
 
   resetStreamButton() {
-    this.resetStreamingState(); // Centralize reset logic
+    this.resetStreamingState();
   }
   
   resetDiskButton() {
-    this.resetStreamingState(); // Centralize reset logic
+    this.resetStreamingState();
   }
 
-  // --- NEW CENTRAL RESET FUNCTION ---
   resetStreamingState() {
     this.isStreaming = false;
     this.mode = "none";
     this.enableButtons();
   }
-  // --- END NEW FUNCTION ---
 
-  handleStreamButtonClick() {
+  async handleStreamButtonClick() {
+    // Check if queue mode is enabled
+    if (this.isQueueModeEnabled() && this.queueManager) {
+      const { text, voice, speed } = this.getTtsOptions();
+      if (text.trim().length === 0) {
+        alert('Please enter text to convert');
+        return;
+      }
+      
+      // Add to queue
+      const jobId = await this.queueManager.addJob(text, voice, speed, 'stream');
+      alert(`Job #${jobId} added to queue!\n\nYou can close this tab. You'll get a notification when it's complete.`);
+      
+      // Clear text area if user wants
+      if (confirm('Clear the text area?')) {
+        document.getElementById("ta").value = '';
+      }
+      
+      return;
+    }
+    
+    // Normal stream mode (existing logic)
     if (this.isStreaming) {
-      this.audioPlayer.stop(); // This will also send a "stop" message to the worker
+      this.audioPlayer.stop();
       this.resetStreamingState();
       updateProgress(100, "Streaming stopped");
       return;
@@ -106,11 +135,32 @@ export class ButtonHandler {
     }
 
     updateProgress(0, "Initializing audio streaming...");
-    this.audioPlayer.setTotalChunks(text.length / 300); // rough estimate
-    this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed }); // Pass speed
+    this.audioPlayer.setTotalChunks(text.length / 300);
+    this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed });
   }
   
   async handleDiskButtonClick() {
+    // Check if queue mode is enabled
+    if (this.isQueueModeEnabled() && this.queueManager) {
+      const { text, voice, speed } = this.getTtsOptions();
+      if (text.trim().length === 0) {
+        alert('Please enter text to convert');
+        return;
+      }
+      
+      // Add to queue
+      const jobId = await this.queueManager.addJob(text, voice, speed, 'disk');
+      alert(`Job #${jobId} added to queue!\n\nYou can close this tab. You'll get a notification when it's complete.\n\nYou can download the audio from the queue list when it's done.`);
+      
+      // Clear text area if user wants
+      if (confirm('Clear the text area?')) {
+        document.getElementById("ta").value = '';
+      }
+      
+      return;
+    }
+    
+    // Normal disk mode (existing logic)
     if (this.isStreaming) {
       this.worker.postMessage({ type: "stop" });
       await this.audioDiskSaver.stopSave();
@@ -133,7 +183,7 @@ export class ButtonHandler {
 
       this.audioDiskSaver.setTotalChunks(text.length / 100); 
       updateProgress(0, "Processing audio for saving...");
-      this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed }); // Pass speed
+      this.worker.postMessage({ type: "generate", text: text, voice: voice, speed: speed });
     } catch (error) {
       console.error("Error initializing disk save:", error);
       updateProgress(100, "File save error!");
@@ -141,7 +191,6 @@ export class ButtonHandler {
     }
   }
 
-  // --- STATE MANAGEMENT ---
   setStreamingState(mode) {
     this.isStreaming = true;
     this.mode = mode;
@@ -151,11 +200,11 @@ export class ButtonHandler {
 
     if (mode === "stream") {
       this.showButtonContent(streamBtn, "loading");
-      streamBtn.disabled = false; // It's now a stop button
+      streamBtn.disabled = false;
       diskBtn.disabled = true;
     } else if (mode === "disk") {
       this.showButtonContent(diskBtn, "download-loading");
-      diskBtn.disabled = false; // It's now a stop button
+      diskBtn.disabled = false;
       streamBtn.disabled = true;
     }
   }
