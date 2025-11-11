@@ -33,10 +33,10 @@ if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
   }
 }
 
-let tts_worker = new Worker(new URL("./worker_minimal_fix.js", import.meta.url), { type: "module" });
+let tts_worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 let audioPlayer = new AudioPlayer(tts_worker);
 let audioDiskSaver = new AudioDiskSaver();
-let buttonHandler = new ButtonHandler(tts_worker, audioDiskSaver, getRealSpeed);
+let buttonHandler = new ButtonHandler(tts_worker, audioPlayer, audioDiskSaver, getRealSpeed);
 let queueManager = new BackgroundQueueManager();
 
 // Track current queue job
@@ -310,12 +310,12 @@ window.addEventListener('queue-process-job', async (event) => {
   audioChunksForQueue = [];
   currentJobEstimation = null; // Reset estimation for new job
   
-  // MINIMAL FIX: Use smaller chunks (250 chars instead of 400)
+  // MINIMAL FIX ONLY: Reduced chunk size from 400 to 250 for better reliability
   try {
-    // Use semantic-split with smaller chunk size
+    // Use semantic-split with smaller chunk size (250 instead of 400)
     const chunks = await import('./semantic-split.js').then(m => m.splitTextSmart(text, 250));
     
-    console.log(`Processing ${chunks.length} small chunks for job ${jobId}`);
+    console.log(`Processing ${chunks.length} chunks for job ${jobId} (smaller chunks for reliability)`);
     
     if (chunks.length === 0) {
       // Handle empty text case
@@ -343,7 +343,6 @@ window.addEventListener('queue-process-job', async (event) => {
       speed,
       current: 0,
       total: chunks.length,
-      totalChunks: chunks.length, // Add for UI compatibility
       totalSentences: totalEstimatedSentences,
       processedSentences: 0
     };
