@@ -43,6 +43,7 @@ let queueManager = new BackgroundQueueManager();
 let currentQueueJobId = null;
 let currentQueueMode = null;
 let audioChunksForQueue = [];
+let currentJobEstimation = null; // Store the chunk estimation for current job
 
 function populateVoiceSelector(voices) {
   const voiceSelector = document.getElementById("voiceSelector");
@@ -135,40 +136,56 @@ const onMessageReceived = async (e) => {
         
         const chunkNum = audioChunksForQueue.length;
         
-        // Improved progress tracking - estimate based on text length and audio pattern
-        let estimatedTotalChunks = 50; // Fallback estimate
-        
-        try {
-          const jobDetails = await queueManager.getJobDetails(currentQueueJobId);
-          
-          if (jobDetails) {
-            const textLength = jobDetails.text.length;
-            const wordsLength = textLength.split(' ').length;
+        // Calculate estimated chunks only once at the start
+        if (currentJobEstimation === null) {
+          try {
+            const jobDetails = await queueManager.getJobDetails(currentQueueJobId);
             
-            // Better estimation based on text characteristics
-            if (textLength < 500) {
-              estimatedTotalChunks = Math.max(5, Math.ceil(wordsLength * 0.8)); // Short text
-            } else if (textLength < 2000) {
-              estimatedTotalChunks = Math.max(8, Math.ceil(wordsLength * 1.0)); // Medium text
+            if (jobDetails) {
+              const textLength = jobDetails.text.length;
+              const wordsLength = textLength.split(' ').length;
+              
+              // Calculate estimation based on text characteristics
+              let estimatedTotalChunks;
+              if (textLength < 500) {
+                estimatedTotalChunks = Math.max(5, Math.ceil(wordsLength * 0.8)); // Short text
+              } else if (textLength < 2000) {
+                estimatedTotalChunks = Math.max(8, Math.ceil(wordsLength * 1.0)); // Medium text
+              } else {
+                estimatedTotalChunks = Math.max(12, Math.ceil(wordsLength * 1.2)); // Long text
+              }
+              
+              // Ensure reasonable bounds
+              currentJobEstimation = Math.min(estimatedTotalChunks, 150);
+              
+              console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${wordsLength} words â†’ est. ${currentJobEstimation} chunks`);
             } else {
-              estimatedTotalChunks = Math.max(12, Math.ceil(wordsLength * 1.2)); // Long text
+              // Fallback estimation
+              currentJobEstimation = Math.max(10, Math.ceil(chunkNum * 1.5));
             }
-            
-            // Ensure reasonable bounds
-            estimatedTotalChunks = Math.min(estimatedTotalChunks, 150);
-            
-            console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${wordsLength} words â†’ est. ${estimatedTotalChunks} chunks`);
+          } catch (error) {
+            console.warn('Could not get job details for progress calculation:', error);
+            // Use a reasonable default based on chunk pattern
+            currentJobEstimation = Math.max(10, Math.ceil(chunkNum * 1.5));
           }
-        } catch (error) {
-          console.warn('Could not get job details for progress calculation:', error);
-          // Use a reasonable default based on chunk pattern
-          estimatedTotalChunks = Math.max(10, Math.ceil(chunkNum * 1.5));
+          
+          // Store the estimation in the queue for future reference
+          if (currentJobEstimation) {
+            await queueManager.updateJobProgress(currentQueueJobId, 0, chunkNum, currentJobEstimation);
+          }
         }
         
-        const percent = Math.min((chunkNum / estimatedTotalChunks) * 100, 99);
-        
-        await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, estimatedTotalChunks);
-        updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${estimatedTotalChunks} chunks (${Math.round(percent)}%)`);
+        // Use the stored estimation for progress calculation
+        if (currentJobEstimation) {
+          const percent = Math.min((chunkNum / currentJobEstimation) * 100, 99);
+          await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, currentJobEstimation);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${currentJobEstimation} chunks (${Math.round(percent)}%)`);
+        } else {
+          // Fallback if no estimation available
+          const fallbackEstimation = Math.max(10, Math.ceil(chunkNum * 1.5));
+          const percent = Math.min((chunkNum / fallbackEstimation) * 100, 99);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${fallbackEstimation} chunks (${Math.round(percent)}%)`);
+        }
         
         tts_worker.postMessage({ type: "buffer_processed" });
       } else {
@@ -197,6 +214,7 @@ const onMessageReceived = async (e) => {
         currentQueueJobId = null;
         currentQueueMode = null;
         audioChunksForQueue = [];
+        currentJobEstimation = null; // Reset estimation
         
         updateQueueUI();
         updateProgress(100, "Queue job complete!");
@@ -232,6 +250,7 @@ const onErrorReceived = (e) => {
     currentQueueJobId = null;
     currentQueueMode = null;
     audioChunksForQueue = [];
+    currentJobEstimation = null; // Reset estimation
   }
   
   buttonHandler.resetStreamingState();
@@ -253,6 +272,7 @@ window.addEventListener('queue-process-job', async (event) => {
   currentQueueJobId = jobId;
   currentQueueMode = mode;
   audioChunksForQueue = [];
+  currentJobEstimation = null; // Reset estimation for new job
   
   // Send to worker
   tts_worker.postMessage({ 
