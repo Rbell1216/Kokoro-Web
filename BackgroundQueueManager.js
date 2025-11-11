@@ -266,6 +266,17 @@ export class BackgroundQueueManager {
     });
   }
 
+  async getJobDetails(jobId) {
+    const tx = this.db.transaction('queue', 'readonly');
+    const store = tx.objectStore('queue');
+    
+    return new Promise((resolve, reject) => {
+      const request = store.get(jobId);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
   async deleteJob(id) {
     const tx = this.db.transaction(['queue', 'audio'], 'readwrite');
     
