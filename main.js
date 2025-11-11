@@ -102,7 +102,7 @@ const onMessageReceived = async (e) => {
       updateProgress(0, "Loading model...");
       break;
 
-    case "initialized":
+    case "loading_model_ready":
       buttonHandler.enableButtons();
       updateProgress(100, "Model loaded successfully");
       
@@ -145,27 +145,27 @@ const onMessageReceived = async (e) => {
           const percent = Math.min((chunkNum / totalChunks) * 100, 98); // Cap at 98% until truly complete
           
           await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, totalChunks);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${totalChunks} sentences (${Math.round(percent)}%)`);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${window._queueRemainingChunks.totalChunks} chunks (${Math.round(percent)}%)`);
         } else if (currentJobEstimation) {
           // Fallback to old estimation method
           const percent = Math.min((chunkNum / currentJobEstimation) * 100, 98);
           await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, currentJobEstimation);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${currentJobEstimation} sentences (${Math.round(percent)}%)`);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${currentJobEstimation} chunks (${Math.round(percent)}%)`);
         } else {
           // Final fallback
           const fallbackEstimation = Math.max(5, Math.ceil(chunkNum * 1.2));
           const percent = Math.min((chunkNum / fallbackEstimation) * 100, 98);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${fallbackEstimation} sentences (${Math.round(percent)}%)`);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${fallbackEstimation} chunks (${Math.round(percent)}%)`);
         }
         
-        tts_worker.postMessage({ command: "buffer_processed" });
+        tts_worker.postMessage({ type: "buffer_processed" });
       } else {
         // Manual job - use existing logic
         if (buttonHandler.getMode() === "disk") {
           const percent = await audioDiskSaver.addAudioChunk(e.data.audio);
           updateProgress(percent, "Processing audio for saving...");
           buttonHandler.updateDiskButtonToStop();
-          tts_worker.postMessage({ command: "buffer_processed" });
+          tts_worker.postMessage({ type: "buffer_processed" });
         } else if (buttonHandler.getMode() === "stream") {
           buttonHandler.updateStreamButtonToStop();
           await audioPlayer.queueAudio(e.data.audio);
@@ -211,7 +211,7 @@ const onMessageReceived = async (e) => {
           
           // Send next chunk to worker
           tts_worker.postMessage({ 
-            command: "generate", 
+            type: "generate", 
             text: nextChunk, 
             voice: chunkInfo.voice, 
             speed: chunkInfo.speed 
@@ -295,9 +295,6 @@ const onErrorReceived = (e) => {
 
 tts_worker.addEventListener("message", onMessageReceived);
 tts_worker.addEventListener("error", onErrorReceived);
-
-// Initialize the TTS model
-tts_worker.postMessage({ command: "init" });
 
 // ===== QUEUE EVENT HANDLERS =====
 
@@ -460,7 +457,7 @@ async function updateQueueUI() {
             <div class="queue-progress-bar">
               <div class="queue-progress-fill" style="width: ${job.progress}%"></div>
             </div>
-            ${job.chunks && job.totalChunks ? `<span class="sentences-info">${job.chunks}/${job.totalChunks} sentences</span>` : ''}
+            ${job.chunks && job.totalChunks ? `<span class="chunks-info">${job.chunks}/${job.totalChunks} chunks</span>` : ''}
           </div>
         ` : ''}
       </div>
