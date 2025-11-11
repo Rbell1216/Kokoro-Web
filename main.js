@@ -146,17 +146,18 @@ const onMessageReceived = async (e) => {
               const wordsLength = textLength.split(' ').length;
               
               // Calculate estimation based on text characteristics
+              // More generous estimates for semantic-split.js chunking
               let estimatedTotalChunks;
               if (textLength < 500) {
-                estimatedTotalChunks = Math.max(5, Math.ceil(wordsLength * 0.8)); // Short text
+                estimatedTotalChunks = Math.max(6, Math.ceil(wordsLength * 1.8)); // Short text - more generous
               } else if (textLength < 2000) {
-                estimatedTotalChunks = Math.max(8, Math.ceil(wordsLength * 1.0)); // Medium text
+                estimatedTotalChunks = Math.max(10, Math.ceil(wordsLength * 2.2)); // Medium text - more generous
               } else {
-                estimatedTotalChunks = Math.max(12, Math.ceil(wordsLength * 1.2)); // Long text
+                estimatedTotalChunks = Math.max(15, Math.ceil(wordsLength * 2.8)); // Long text - more generous
               }
               
               // Ensure reasonable bounds
-              currentJobEstimation = Math.min(estimatedTotalChunks, 150);
+              currentJobEstimation = Math.min(Math.max(estimatedTotalChunks, 12), 200);
               
               console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${wordsLength} words → est. ${currentJobEstimation} chunks`);
             } else {
@@ -206,6 +207,10 @@ const onMessageReceived = async (e) => {
       if (currentQueueJobId) {
         // Queue job complete
         console.log(`Queue job ${currentQueueJobId} complete with ${audioChunksForQueue.length} chunks`);
+        
+        // Update final progress to 100% before completing
+        const finalChunkNum = audioChunksForQueue.length;
+        await queueManager.updateJobProgress(currentQueueJobId, 100, finalChunkNum, currentJobEstimation);
         
         // Mark job as complete with audio data
         await queueManager.jobComplete(currentQueueJobId, audioChunksForQueue, true);
