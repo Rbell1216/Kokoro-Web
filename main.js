@@ -224,24 +224,54 @@ const onMessageReceived = async (e) => {
 
     case "complete":
       if (currentQueueJobId) {
-        // Queue job complete
-        console.log(`Queue job ${currentQueueJobId} complete with ${audioChunksForQueue.length} chunks`);
-        
-        // Update final progress to 100% before completing
-        const finalChunkNum = audioChunksForQueue.length;
-        await queueManager.updateJobProgress(currentQueueJobId, 100, finalChunkNum, currentJobEstimation);
-        
-        // Mark job as complete with audio data
-        await queueManager.jobComplete(currentQueueJobId, audioChunksForQueue, true);
-        
-        // Reset queue job tracking
-        currentQueueJobId = null;
-        currentQueueMode = null;
-        audioChunksForQueue = [];
-        currentJobEstimation = null; // Reset estimation
-        
-        updateQueueUI();
-        updateProgress(100, "Queue job complete!");
+        // Check if we have remaining sentences to process
+        if (window._queueRemainingSentences && 
+            window._queueRemainingSentences.jobId === currentQueueJobId && 
+            window._queueRemainingSentences.remaining.length > 0) {
+          
+          // Process next sentence automatically
+          const sentenceInfo = window._queueRemainingSentences;
+          const nextSentence = sentenceInfo.remaining.shift();
+          const currentIndex = sentenceInfo.current;
+          const totalSentences = sentenceInfo.total;
+          
+          console.log(`Processing sentence ${currentIndex + 1}/${totalSentences}: "${nextSentence.substring(0, 50)}..."`);
+          
+          // Send next sentence to worker
+          tts_worker.postMessage({ 
+            type: "generate", 
+            text: nextSentence, 
+            voice: sentenceInfo.voice, 
+            speed: sentenceInfo.speed 
+          });
+          
+          sentenceInfo.current++;
+          updateProgress(Math.round((currentIndex / totalSentences) * 100), 
+                         `Processing queue job ${currentQueueJobId} (${currentIndex + 1}/${totalSentences} sentences)...`);
+          
+        } else {
+          // All sentences processed, job complete
+          console.log(`Queue job ${currentQueueJobId} complete with ${audioChunksForQueue.length} chunks`);
+          
+          // Update final progress to 100% before completing
+          const finalChunkNum = audioChunksForQueue.length;
+          await queueManager.updateJobProgress(currentQueueJobId, 100, finalChunkNum, currentJobEstimation);
+          
+          // Mark job as complete with audio data
+          await queueManager.jobComplete(currentQueueJobId, audioChunksForQueue, true);
+          
+          // Reset queue job tracking
+          currentQueueJobId = null;
+          currentQueueMode = null;
+          audioChunksForQueue = [];
+          currentJobEstimation = null; // Reset estimation
+          
+          // Clear remaining sentences
+          window._queueRemainingSentences = null;
+          
+          updateQueueUI();
+          updateProgress(100, "Queue job complete!");
+        }
         
       } else {
         // Manual job complete - use existing logic
@@ -305,15 +335,64 @@ window.addEventListener('queue-process-job', async (event) => {
   audioChunksForQueue = [];
   currentJobEstimation = null; // Reset estimation for new job
   
-  // Send to worker
-  tts_worker.postMessage({ 
-    type: "generate", 
-    text: text, 
-    voice: voice, 
-    speed: speed 
-  });
-  
-  updateProgress(0, `Processing queue job ${jobId}...`);
+  // CRITICAL FIX: Split text into individual sentences and process one at a time
+  try {
+    // Use semantic-split to get individual sentences (higher limit to get single sentences)
+    const sentences = await import('./semantic-split.js').then(m => m.splitTextSmart(text, 1000));
+    
+    // Import splitLongSentence function too
+    const { splitLongSentence } = await import('./semantic-split.js');
+    
+    // Get all individual sentences, handling long sentences too
+    let allSentences = [];
+    for (const chunk of sentences) {
+      const subSentences = splitLongSentence(chunk, 300); // Split long sentences
+      allSentences.push(...subSentences);
+    }
+    
+    console.log(`Processing ${allSentences.length} individual sentences for job ${jobId}`);
+    
+    if (allSentences.length === 0) {
+      // Handle empty text case
+      await queueManager.jobComplete(jobId, null, false);
+      updateProgress(100, "No text to process");
+      return;
+    }
+    
+    // Process first sentence immediately, rest will be processed automatically
+    const firstSentence = allSentences[0];
+    console.log(`Processing first sentence: "${firstSentence.substring(0, 50)}..."`);
+    
+    tts_worker.postMessage({ 
+      type: "generate", 
+      text: firstSentence, 
+      voice: voice, 
+      speed: speed 
+    });
+    
+    updateProgress(0, `Processing queue job ${jobId} (1/${allSentences.length} sentences)...`);
+    
+    // Store remaining sentences for automatic processing
+    window._queueRemainingSentences = {
+      jobId,
+      remaining: allSentences.slice(1),
+      voice,
+      speed,
+      current: 1,
+      total: allSentences.length
+    };
+    
+  } catch (error) {
+    console.error("Error splitting text into sentences:", error);
+    // Fallback: send entire text as single chunk
+    tts_worker.postMessage({ 
+      type: "generate", 
+      text: text, 
+      voice: voice, 
+      speed: speed 
+    });
+    updateProgress(0, `Processing queue job ${jobId}...`);
+  }
 });
 
 // Show completed job
