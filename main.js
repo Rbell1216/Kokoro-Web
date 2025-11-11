@@ -134,10 +134,41 @@ const onMessageReceived = async (e) => {
         audioChunksForQueue.push(audioData);
         
         const chunkNum = audioChunksForQueue.length;
-        const percent = Math.min((chunkNum / 50) * 100, 99); // Estimate
         
-        await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, 50);
-        updateProgress(percent, `Processing queue job ${currentQueueJobId}...`);
+        // Improved progress tracking - estimate based on text length and audio pattern
+        let estimatedTotalChunks = 50; // Fallback estimate
+        
+        try {
+          const jobDetails = await queueManager.getJobDetails(currentQueueJobId);
+          
+          if (jobDetails) {
+            const textLength = jobDetails.text.length;
+            const wordsLength = textLength.split(' ').length;
+            
+            // Better estimation based on text characteristics
+            if (textLength < 500) {
+              estimatedTotalChunks = Math.max(5, Math.ceil(wordsLength * 0.8)); // Short text
+            } else if (textLength < 2000) {
+              estimatedTotalChunks = Math.max(8, Math.ceil(wordsLength * 1.0)); // Medium text
+            } else {
+              estimatedTotalChunks = Math.max(12, Math.ceil(wordsLength * 1.2)); // Long text
+            }
+            
+            // Ensure reasonable bounds
+            estimatedTotalChunks = Math.min(estimatedTotalChunks, 150);
+            
+            console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${wordsLength} words â†’ est. ${estimatedTotalChunks} chunks`);
+          }
+        } catch (error) {
+          console.warn('Could not get job details for progress calculation:', error);
+          // Use a reasonable default based on chunk pattern
+          estimatedTotalChunks = Math.max(10, Math.ceil(chunkNum * 1.5));
+        }
+        
+        const percent = Math.min((chunkNum / estimatedTotalChunks) * 100, 99);
+        
+        await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, estimatedTotalChunks);
+        updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${estimatedTotalChunks} chunks (${Math.round(percent)}%)`);
         
         tts_worker.postMessage({ type: "buffer_processed" });
       } else {
@@ -312,7 +343,15 @@ async function updateQueueUI() {
       <div class="queue-job-meta">
         <span>Voice: ${job.voice}</span>
         <span>Speed: ${job.speed.toFixed(2)}x</span>
-        ${job.progress > 0 ? `<span>Progress: ${Math.round(job.progress)}%</span>` : ''}
+        ${job.progress > 0 ? `
+          <div class="queue-progress-info">
+            <span>Progress: ${Math.round(job.progress)}%</span>
+            <div class="queue-progress-bar">
+              <div class="queue-progress-fill" style="width: ${job.progress}%"></div>
+            </div>
+            ${job.chunks && job.totalChunks ? `<span class="chunks-info">${job.chunks}/${job.totalChunks} chunks</span>` : ''}
+          </div>
+        ` : ''}
       </div>
       <div class="queue-job-actions">
         ${job.status === 'complete' ? `
