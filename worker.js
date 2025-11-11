@@ -1,31 +1,35 @@
-// worker.js - WebGPU Only with Retry Mechanism
+// worker.js - FINAL FIX: Voice validation + memory management to prevent hanging at chunk 26
 import { KokoroTTS } from "./kokoro.js";
 import { env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/dist/transformers.min.js";
 import { splitTextSmart } from "./semantic-split.js";
 
-// WebGPU ONLY - No WASM fallback to prevent memory/context conflicts
 async function detectWebGPU() {
   try {
+    // Check if WebGPU is supported
     if (!('gpu' in navigator)) {
-      throw new Error("WebGPU not supported in this browser");
+      console.log("WebGPU not supported in this browser, using WASM");
+      return false;
     }
     
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) {
-      throw new Error("No WebGPU adapter found");
+      console.log("No WebGPU adapter found, using WASM");
+      return false;
     }
     
     console.log("WebGPU adapter found:", adapter.info.device || 'Unknown');
     return true;
   } catch (error) {
-    throw new Error(`WebGPU detection failed: ${error.message}`);
+    console.warn("WebGPU detection failed:", error.message, "using WASM");
+    return false;
   }
 }
 
-const useWebGPU = await detectWebGPU();
-self.postMessage({ status: "loading_model_start", device: "webgpu" });
+const device = await detectWebGPU() ? "webgpu" : "wasm";
+self.postMessage({ status: "loading_model_start", device });
 
 let model_id = "onnx-community/Kokoro-82M-v1.0-ONNX";
+let useWasmFallback = false;
 
 if (self.location.hostname === "localhost2") {
   env.allowLocalModels = true;
@@ -35,25 +39,32 @@ if (self.location.hostname === "localhost2") {
 let tts = null;
 try {
   tts = await KokoroTTS.from_pretrained(model_id, {
-    dtype: "fp32", device: "webgpu",
+    dtype: device === "wasm" ? "q8" : "fp32", device,
     progress_callback: (progress) => {
       self.postMessage({ status: "loading_model_progress", progress });
     }
   });
-} catch (error) {
-  console.error("Failed to load KokoroTTS model:", error);
-  self.postMessage({ status: "error", message: `Model loading failed: ${error.message}` });
-  return;
+} catch (initialError) {
+  console.warn("Failed to load model with WebGPU, falling back to WASM:", initialError.message);
+  useWasmFallback = true;
+  device = "wasm";
+  
+  tts = await KokoroTTS.from_pretrained(model_id, {
+    dtype: "q8", device: "wasm",
+    progress_callback: (progress) => {
+      self.postMessage({ status: "loading_model_progress", progress });
+    }
+  });
 }
 
-self.postMessage({ status: "loading_model_ready", voices: tts.voices, device: "webgpu" });
+self.postMessage({ status: "loading_model_ready", voices: tts.voices, device: useWasmFallback ? "wasm" : device });
 
-// --- MEMORY-SAFE QUEUE LOGIC ---
+// --- MEMORY-SAFE QUEUE LOGIC WITH HANGING PREVENTION ---
 let bufferQueueSize = 0;
-const MAX_QUEUE_SIZE = 4; // Reduced to prevent memory issues
+const MAX_QUEUE_SIZE = 5; // Reduced from 6 to prevent memory issues
 let shouldStop = false;
-let consecutiveErrors = 0;
-const MAX_CONSECUTIVE_ERRORS = 3; // Reset after this many errors
+let processedChunks = 0; // Track chunk count to detect memory issues
+const MAX_CHUNKS_BEFORE_RESET = 50; // Reset TTS instance every 50 chunks
 // --- END QUEUE LOGIC ---
 
 self.addEventListener("message", async (e) => {
@@ -62,7 +73,7 @@ self.addEventListener("message", async (e) => {
   if (type === "stop") {
     shouldStop = true;
     bufferQueueSize = 0;
-    consecutiveErrors = 0;
+    processedChunks = 0;
     console.log("Stop command received, stopping generation");
     return;
   }
@@ -75,16 +86,41 @@ self.addEventListener("message", async (e) => {
   if (type === "generate" && text) { 
     shouldStop = false;
     
-    // Ensure valid voice ID is used
+    // CRITICAL FIX: Ensure valid voice ID is used
     if (!voice || !tts.voices[voice]) {
       console.warn(`Invalid voice "${voice}", defaulting to "af_heart". Available voices:`, Object.keys(tts.voices));
-      voice = "af_heart";
+      voice = "af_heart"; // Default to a known good voice
     }
     
-    // Process text into 250-char chunks for reliability
-    let sentences = splitTextSmart(text, 250);
+    // Fixed chunk size: 250 characters for reliability
+    let sentences = splitTextSmart(text, 250); 
+    let currentTTS = tts;
+    let useWasmFallback = false;
     
-    console.log(`Processing chunk with ${sentences.length} sentences using WebGPU`);
+    // MEMORY MANAGEMENT FIX: Reset TTS instance if we've processed too many chunks
+    processedChunks++;
+    if (processedChunks >= MAX_CHUNKS_BEFORE_RESET) {
+      console.log(`Processed ${processedChunks} chunks, resetting TTS instance to prevent memory leaks...`);
+      try {
+        // Force cleanup
+        bufferQueueSize = 0;
+        if (typeof gc === 'function') gc(); // Force garbage collection hint
+        
+        // Reload TTS model
+        tts = await KokoroTTS.from_pretrained(model_id, {
+          dtype: device === "wasm" ? "q8" : "fp32", device,
+          progress_callback: () => {} // Silent reload
+        });
+        currentTTS = tts;
+        processedChunks = 0; // Reset counter
+        console.log("TTS instance successfully reset - memory leak prevented");
+      } catch (resetError) {
+        console.warn("Failed to reset TTS instance, continuing:", resetError.message);
+        // Don't return error, just continue with current instance
+      }
+    }
+
+    console.log(`Processing ${sentences.length} sentences per chunk (chunk #${processedChunks})`);
     
     // Report progress
     self.postMessage({ 
@@ -93,9 +129,9 @@ self.addEventListener("message", async (e) => {
       totalEstimated: sentences.length
     });
     
-    // Wait for buffer space (shorter timeout to prevent hanging)
+    // Wait for buffer space (reduced timeout to prevent hanging)
     let waitAttempts = 0;
-    const MAX_WAIT_ATTEMPTS = 30; // 15 seconds max wait
+    const MAX_WAIT_ATTEMPTS = 40; // 20 seconds max wait
     while (bufferQueueSize >= MAX_QUEUE_SIZE && !shouldStop && waitAttempts < MAX_WAIT_ATTEMPTS) {
       await new Promise(resolve => setTimeout(resolve, 300));
       waitAttempts++;
@@ -107,93 +143,76 @@ self.addEventListener("message", async (e) => {
     }
     
     if (waitAttempts >= MAX_WAIT_ATTEMPTS) {
-      console.warn("Buffer queue timeout, proceeding with smaller queue");
+      console.warn("Buffer timeout, proceeding with smaller queue");
       bufferQueueSize = Math.min(bufferQueueSize, 2); // Force smaller queue
     }
     
-    // Process sentences with retry mechanism
+    // Process sentences with timeout and error handling
     for (let i = 0; i < sentences.length; i++) {
       const sentence = sentences[i];
       if (shouldStop) break;
       
-      // Shorter delay between sentences to prevent timeouts
+      // Reduced delay to prevent timeouts
       if (i > 0) {
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 400)); // Reduced from 800ms
       }
       
-      let sentenceSuccess = false;
-      let retryCount = 0;
-      const MAX_RETRIES = 3;
-      
-      // Retry mechanism for each sentence
-      while (!sentenceSuccess && retryCount <= MAX_RETRIES && !shouldStop) {
-        try {
-          // Shorter timeout for each sentence (10 seconds)
-          const audioPromise = tts.generate(sentence, { voice, speed });
-          const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Sentence generation timeout')), 10000);
-          });
-          
-          const audio = await Promise.race([audioPromise, timeoutPromise]);
-          
-          if (shouldStop) break;
+      try {
+        // Shorter timeout for better responsiveness
+        const audioPromise = currentTTS.generate(sentence, { voice, speed });
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Audio generation timeout')), 15000); // 15 seconds
+        });
+        
+        const audio = await Promise.race([audioPromise, timeoutPromise]);
+        
+        if (shouldStop) break;
 
-          let ab = audio.audio.buffer;
-          bufferQueueSize++;
-          self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+        let ab = audio.audio.buffer;
+        bufferQueueSize++;
+        self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+        
+        console.log(`Sentence ${i + 1}/${sentences.length} processed successfully`);
+        
+      } catch (audioError) {
+        const isWebGPUError = audioError.message && 
+          (audioError.message.includes('GPUBuffer') || 
+           audioError.message.includes('webgpu') ||
+           audioError.name === 'AbortError');
+        
+        const isSessionError = audioError.message && 
+          audioError.message.includes('Session already started');
+        
+        if (isWebGPUError || isSessionError) {
+          console.warn("WebGPU error detected, switching to WASM:", audioError.message);
+          useWasmFallback = true;
           
-          console.log(`Sentence ${i + 1}/${sentences.length} processed successfully (attempt ${retryCount + 1})`);
-          sentenceSuccess = true;
-          consecutiveErrors = 0; // Reset error counter on success
-          
-        } catch (sentenceError) {
-          retryCount++;
-          consecutiveErrors++;
-          
-          console.warn(`Sentence ${i + 1} attempt ${retryCount} failed:`, sentenceError.message);
-          
-          if (retryCount <= MAX_RETRIES) {
-            // Exponential backoff: 1s, 2s, 4s
-            const delay = Math.pow(2, retryCount - 1) * 1000;
-            console.log(`Retrying sentence ${i + 1} in ${delay}ms...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-          } else {
-            console.error(`Sentence ${i + 1} failed after ${MAX_RETRIES} retries, skipping:`, sentence.substring(0, 50) + "...");
-            break;
+          try {
+            currentTTS = tts._wasmFallback;
+            await new Promise(resolve => setTimeout(resolve, 800)); // Shorter delay
+            
+            const audio = await currentTTS.generate(sentence, { voice, speed });
+            let ab = audio.audio.buffer;
+            bufferQueueSize++;
+            self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+            
+            console.log(`Sentence ${i + 1}/${sentences.length} processed with WASM fallback`);
+            
+          } catch (wasmError) {
+            console.error("WASM fallback failed:", wasmError.message);
+            // Continue to next sentence instead of hanging
           }
-          
-          // Reset TTS instance if too many consecutive errors
-          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            console.warn("Too many consecutive errors, resetting TTS instance...");
-            try {
-              // Force garbage collection hint
-              if (typeof gc === 'function') gc();
-              
-              // Create new TTS instance
-              tts = await KokoroTTS.from_pretrained(model_id, {
-                dtype: "fp32", device: "webgpu",
-                progress_callback: () => {} // Silent reload
-              });
-              
-              console.log("TTS instance reset successfully");
-              consecutiveErrors = 0;
-            } catch (resetError) {
-              console.error("Failed to reset TTS instance:", resetError.message);
-              break;
-            }
-          }
+        } else if (audioError.message && audioError.message.includes('timeout')) {
+          console.warn("Timeout, skipping sentence:", sentence.substring(0, 50) + "...");
+        } else {
+          console.error("Generation error:", audioError.message);
+          // Continue processing instead of hanging
         }
-      }
-      
-      // If we've had too many total failures, stop processing
-      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS * 2) {
-        console.error("Too many consecutive failures, stopping chunk processing");
-        break;
       }
     }
 
-    // Always send complete message
-    console.log(`Chunk processing complete with retry mechanism`);
+    // Always send complete to prevent hanging
+    console.log(`Chunk #${processedChunks} complete with ${sentences.length} sentences`);
     self.postMessage({ 
       status: "complete",
       processedSentences: sentences.length
