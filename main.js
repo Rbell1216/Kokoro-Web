@@ -139,23 +139,23 @@ const onMessageReceived = async (e) => {
         
         if (window._queueRemainingChunks) {
           const chunkInfo = window._queueRemainingChunks;
-          const totalSentences = chunkInfo.totalSentences || currentJobEstimation || 10;
+          const totalChunks = chunkInfo.totalChunks || chunkInfo.totalSentences || currentJobEstimation || 10;
           
-          // Use actual sentence count for more accurate progress
-          const percent = Math.min((chunkNum / totalSentences) * 100, 98); // Cap at 98% until truly complete
+          // Use chunk count for progress calculation
+          const percent = Math.min((chunkNum / totalChunks) * 100, 98); // Cap at 98% until truly complete
           
-          await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, totalSentences);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${totalSentences} sentences (${Math.round(percent)}%)`);
+          await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, totalChunks);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${window._queueRemainingChunks.totalChunks} chunks (${Math.round(percent)}%)`);
         } else if (currentJobEstimation) {
           // Fallback to old estimation method
           const percent = Math.min((chunkNum / currentJobEstimation) * 100, 98);
           await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, currentJobEstimation);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${currentJobEstimation} sentences (${Math.round(percent)}%)`);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${currentJobEstimation} chunks (${Math.round(percent)}%)`);
         } else {
           // Final fallback
           const fallbackEstimation = Math.max(5, Math.ceil(chunkNum * 1.2));
           const percent = Math.min((chunkNum / fallbackEstimation) * 100, 98);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${fallbackEstimation} sentences (${Math.round(percent)}%)`);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${fallbackEstimation} chunks (${Math.round(percent)}%)`);
         }
         
         tts_worker.postMessage({ type: "buffer_processed" });
