@@ -145,7 +145,7 @@ const onMessageReceived = async (e) => {
           const percent = Math.min((chunkNum / totalChunks) * 100, 98); // Cap at 98% until truly complete
           
           await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, totalChunks);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${window._queueRemainingChunks.totalChunks} chunks (${Math.round(percent)}%)`);
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${totalChunks} chunks (${Math.round(percent)}%)`);
         } else if (currentJobEstimation) {
           // Fallback to old estimation method
           const percent = Math.min((chunkNum / currentJobEstimation) * 100, 98);
