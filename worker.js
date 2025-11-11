@@ -126,27 +126,49 @@ async function generateAudio(text, voice = "af_bella", speed = 1.0) {
         audioError.message.includes('Session already started');
       
       if (isSessionError || (isWebGPUError && !useWasmFallback)) {
-        console.warn("Session/WebGPU error, falling back to WASM:", audioError.message);
-        useWasmFallback = true;
+        console.warn("Session/WebGPU error detected:", audioError.message);
+        
+        // SMART RETRY STRATEGY: Wait 2 seconds and clear buffer before retry
+        console.log("Clearing buffer and waiting 2 seconds before retry...");
+        bufferQueueSize = 0;
+        
+        // Wait 2 seconds to let GPU session stabilize
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Try again with current model
         try {
-          if (!currentTTS._wasmFallback) {
-            console.log("Initializing WASM fallback model...");
-            currentTTS._wasmFallback = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
-              dtype: "q8",
-              device: "wasm"
-            });
-          }
-          
-          const audio = await currentTTS._wasmFallback.generate(sentence, { voice, speed });
+          const audio = await currentTTS.generate(sentence, { voice, speed });
           let ab = audio.audio.buffer;
           bufferQueueSize++;
           self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
           
-          console.log(`Sentence ${i + 1}/${sentences.length} processed with WASM fallback`);
+          console.log(`Sentence ${i + 1}/${sentences.length} processed successfully after retry`);
           
-        } catch (wasmError) {
-          console.error("WASM fallback failed, skipping sentence:", wasmError.message);
+        } catch (retryError) {
+          console.warn("Retry failed, falling back to WASM:", retryError.message);
+          useWasmFallback = true;
+          
+          try {
+            if (!currentTTS._wasmFallback) {
+              console.log("Initializing WASM fallback model...");
+              currentTTS._wasmFallback = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
+                dtype: "q8",
+                device: "wasm"
+              });
+            }
+            
+            const audio = await currentTTS._wasmFallback.generate(sentence, { voice, speed });
+            let ab = audio.audio.buffer;
+            bufferQueueSize++;
+            self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+            
+            console.log(`Sentence ${i + 1}/${sentences.length} processed with WASM fallback`);
+            
+          } catch (wasmError) {
+            console.error("WASM fallback failed, skipping sentence:", wasmError.message);
+          }
         }
+        
       } else if (audioError.message && audioError.message.includes('timeout')) {
         console.warn("Audio generation timeout, skipping sentence:", sentence.substring(0, 100) + "...");
       } else {
