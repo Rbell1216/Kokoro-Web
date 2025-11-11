@@ -158,7 +158,7 @@ const onMessageReceived = async (e) => {
               // Ensure reasonable bounds
               currentJobEstimation = Math.min(estimatedTotalChunks, 150);
               
-              console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${wordsLength} words â†’ est. ${currentJobEstimation} chunks`);
+              console.log(`Job ${currentQueueJobId}: ${textLength} chars, ${wordsLength} words → est. ${currentJobEstimation} chunks`);
             } else {
               // Fallback estimation
               currentJobEstimation = Math.max(10, Math.ceil(chunkNum * 1.5));
@@ -347,11 +347,11 @@ async function updateQueueUI() {
     
     const textPreview = job.text.substring(0, 60) + (job.text.length > 60 ? '...' : '');
     const statusEmoji = {
-      'queued': 'â³',
-      'processing': 'âš™ï¸',
-      'complete': 'âœ…',
-      'failed': 'âŒ'
-    }[job.status] || 'â“';
+      'queued': '⏳',
+      'processing': '⚙️',
+      'complete': '✅',
+      'failed': '❌'
+    }[job.status] || '❓';
     
     jobEl.innerHTML = `
       <div class="queue-job-header">
