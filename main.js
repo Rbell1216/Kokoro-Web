@@ -134,18 +134,20 @@ const onMessageReceived = async (e) => {
         const audioData = new Float32Array(e.data.audio);
         audioChunksForQueue.push(audioData);
         
-        // CRITICAL FIX: Use dynamic sentence-based progress tracking
+        // FIXED: Use correct property names and consistent chunk-based progress
         const chunkNum = audioChunksForQueue.length;
         
         if (window._queueRemainingChunks) {
           const chunkInfo = window._queueRemainingChunks;
-          const totalChunks = chunkInfo.totalChunks || chunkInfo.totalSentences || currentJobEstimation || 10;
+          // FIXED: Use correct 'total' property instead of non-existent 'totalChunks'
+          const totalChunks = chunkInfo.total || chunkInfo.totalSentences || currentJobEstimation || 10;
           
           // Use chunk count for progress calculation
           const percent = Math.min((chunkNum / totalChunks) * 100, 98); // Cap at 98% until truly complete
           
           await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, totalChunks);
-          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${window._queueRemainingChunks.totalChunks} chunks (${Math.round(percent)}%)`);
+          // FIXED: Show proper chunk progress instead of undefined
+          updateProgress(percent, `Processing queue job ${currentQueueJobId}: ${chunkNum}/${totalChunks} chunks (${Math.round(percent)}%)`);
         } else if (currentJobEstimation) {
           // Fallback to old estimation method
           const percent = Math.min((chunkNum / currentJobEstimation) * 100, 98);
@@ -186,7 +188,7 @@ const onMessageReceived = async (e) => {
           // Update job progress with new estimation
           if (window._queueRemainingChunks) {
             const currentChunks = window._queueRemainingChunks.current;
-            const totalChunks = Math.ceil(window._queueRemainingChunks.total * (window._queueRemainingChunks.totalChunks || 1));
+            const totalChunks = Math.ceil(window._queueRemainingChunks.total * (window._queueRemainingChunks.totalSentences || 1));
             const percent = Math.min((currentChunks / totalChunks) * 100, 98);
             await queueManager.updateJobProgress(currentQueueJobId, percent, currentChunks, totalChunks);
           }
@@ -218,8 +220,9 @@ const onMessageReceived = async (e) => {
           });
           
           chunkInfo.current++;
+          // FIXED: Show proper chunk progress instead of undefined
           updateProgress(Math.round((currentIndex / totalChunks) * 100), 
-                         `Processing queue job ${currentQueueJobId} (${currentIndex + 1}/${totalChunks} chunks)...`);
+                         `Processing queue job ${currentQueueJobId}: ${currentIndex + 1}/${totalChunks} chunks (${Math.round((currentIndex / totalChunks) * 100)}%)`);
           
         } else {
           // All chunks processed, job complete
@@ -229,7 +232,7 @@ const onMessageReceived = async (e) => {
           console.log(`Queue job ${currentQueueJobId} complete with ${finalChunkNum} chunks`);
           
           // Update final progress to exactly 100%
-          const finalEstimation = window._queueRemainingChunks?.totalSentences || currentJobEstimation || finalChunkNum;
+          const finalEstimation = window._queueRemainingChunks?.total || currentJobEstimation || finalChunkNum;
           await queueManager.updateJobProgress(currentQueueJobId, 100, finalChunkNum, finalEstimation);
           
           // Mark job as complete with audio data
@@ -335,7 +338,7 @@ window.addEventListener('queue-process-job', async (event) => {
     console.log(`Estimated ${totalEstimatedSentences} total sentences for ${chunks.length} chunks`);
     currentJobEstimation = totalEstimatedSentences; // Use sentence-based estimation
     
-    // Store chunk processing info for monitoring
+    // FIXED: Ensure totalChunks property is properly set for UI display
     window._queueRemainingChunks = {
       jobId,
       remaining: chunks,
@@ -343,6 +346,7 @@ window.addEventListener('queue-process-job', async (event) => {
       speed,
       current: 0,
       total: chunks.length,
+      totalChunks: chunks.length, // ADDED: Ensure totalChunks exists for compatibility
       totalSentences: totalEstimatedSentences,
       processedSentences: 0
     };
@@ -358,7 +362,8 @@ window.addEventListener('queue-process-job', async (event) => {
       speed: speed 
     });
     
-    updateProgress(0, `Processing queue job ${jobId} (0/${totalEstimatedSentences} sentences)...`);
+    // FIXED: Show chunk count instead of sentence count in initial progress
+    updateProgress(0, `Processing queue job ${jobId}: 0/${chunks.length} chunks...`);
     
   } catch (error) {
     console.error("Error splitting text into chunks:", error);
