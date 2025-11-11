@@ -29,10 +29,19 @@
     </div>
 
     <!-- Queue Container -->
-    <div id="queueContainer" class="queue-container" style="display: none;">
+    <div id="queueContainer" class="queue-container">
       <div class="queue-header">
         <h3>Background Queue</h3>
-        <div class="queue-stats" id="queueStats">0 queued, 0 processing, 0 complete</div>
+        <div class="queue-controls">
+          <button class="queue-btn-refresh" onclick="refreshQueueDisplay()" title="Refresh queue">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <path d="M20.49 15A9 9 0 1 1 12 3v3l-4 4"></path>
+            </svg>
+            Refresh
+          </button>
+          <div class="queue-stats" id="queueStats">0 queued, 0 processing, 0 complete</div>
+        </div>
       </div>
       <div class="queue-list" id="queueList">
         <!-- Jobs will be added here dynamically -->
