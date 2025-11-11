@@ -2,6 +2,7 @@ import { updateProgress } from "./updateProgress.js";
 import { AudioPlayer } from "./AudioPlayer.js";
 import { AudioDiskSaver } from "./AudioDiskSaver.js";
 import { ButtonHandler } from "./ButtonHandler.js";
+import { BackgroundQueueManager } from "./BackgroundQueueManager.js";
 
 // --- Helper function to remap the slider value ---
 function getRealSpeed(sliderValue) {
@@ -9,7 +10,22 @@ function getRealSpeed(sliderValue) {
   return 0.5 * sliderValue + 0.5;
 }
 
-if (window.location.hostname === "localhost") {
+// Register service worker for HTTPS (GitHub Pages)
+if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
+  navigator.serviceWorker.register("./service-worker.js").then((registration) => {
+    console.log("Service Worker registered:", registration);
+    
+    // Register background sync if supported
+    if ('sync' in registration) {
+      console.log('Background Sync API supported');
+    } else {
+      console.log('Background Sync not supported, using foreground processing');
+    }
+  }).catch(err => {
+    console.warn("Service Worker registration failed:", err);
+  });
+} else if (window.location.hostname === "localhost") {
+  // For localhost testing
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./service-worker.js").then(() => {
       console.log("Service Worker registered.");
@@ -21,6 +37,12 @@ let tts_worker = new Worker(new URL("./worker.js", import.meta.url), { type: "mo
 let audioPlayer = new AudioPlayer(tts_worker);
 let audioDiskSaver = new AudioDiskSaver();
 let buttonHandler = new ButtonHandler(tts_worker, audioPlayer, audioDiskSaver, getRealSpeed);
+let queueManager = new BackgroundQueueManager();
+
+// Track current queue job
+let currentQueueJobId = null;
+let currentQueueMode = null;
+let audioChunksForQueue = [];
 
 function populateVoiceSelector(voices) {
   const voiceSelector = document.getElementById("voiceSelector");
@@ -72,7 +94,8 @@ function populateVoiceSelector(voices) {
   voiceSelector.disabled = false;
 }
 
-const onMessageReceived = async (e) => {switch (e.data.status) {
+const onMessageReceived = async (e) => {
+  switch (e.data.status) {
     case "loading_model_start":
       console.log(e.data);
       updateProgress(0, "Loading model...");
@@ -85,6 +108,16 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
       if (e.data.voices) {
         populateVoiceSelector(e.data.voices);
       }
+      
+      // Check for pending queue jobs
+      const stats = await queueManager.getQueueStats();
+      if (stats.queued > 0 || stats.processing > 0) {
+        console.log(`Found ${stats.queued + stats.processing} pending jobs in queue`);
+        updateQueueUI();
+        
+        // Start processing queue
+        setTimeout(() => queueManager.processNextJob(), 1000);
+      }
       break;
 
     case "loading_model_progress":
@@ -94,35 +127,66 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
       break;
 
     case "stream_audio_data":
-      if (buttonHandler.getMode() === "disk") {
-        const percent = await audioDiskSaver.addAudioChunk(e.data.audio);
-        updateProgress(percent, "Processing audio for saving...");
-        buttonHandler.updateDiskButtonToStop();
-        // Tell the worker it can send the next chunk
+      // Check if this is a queue job or manual job
+      if (currentQueueJobId) {
+        // Queue job - save chunks
+        const audioData = new Float32Array(e.data.audio);
+        audioChunksForQueue.push(audioData);
+        
+        const chunkNum = audioChunksForQueue.length;
+        const percent = Math.min((chunkNum / 50) * 100, 99); // Estimate
+        
+        await queueManager.updateJobProgress(currentQueueJobId, percent, chunkNum, 50);
+        updateProgress(percent, `Processing queue job ${currentQueueJobId}...`);
+        
         tts_worker.postMessage({ type: "buffer_processed" });
-      } else if (buttonHandler.getMode() === "stream") {
-        buttonHandler.updateStreamButtonToStop();
-        // AudioPlayer will send its own "buffer_processed" message
-        await audioPlayer.queueAudio(e.data.audio);
+      } else {
+        // Manual job - use existing logic
+        if (buttonHandler.getMode() === "disk") {
+          const percent = await audioDiskSaver.addAudioChunk(e.data.audio);
+          updateProgress(percent, "Processing audio for saving...");
+          buttonHandler.updateDiskButtonToStop();
+          tts_worker.postMessage({ type: "buffer_processed" });
+        } else if (buttonHandler.getMode() === "stream") {
+          buttonHandler.updateStreamButtonToStop();
+          await audioPlayer.queueAudio(e.data.audio);
+        }
       }
       break;
 
     case "complete":
-      // This "complete" message means the worker has finished ALL sentences
-      if (buttonHandler.getMode() === "disk") {
-        try {
-          updateProgress(99, "Combining audio chunks...");
-          updateProgress(99.5, "Writing file to disk...");
-          await audioDiskSaver.finalizeSave();
-          updateProgress(100, "File saved successfully!");
-        } catch (error) {
-          console.error("Error combining audio chunks:", error);
-          updateProgress(100, "Error saving file!");
+      if (currentQueueJobId) {
+        // Queue job complete
+        console.log(`Queue job ${currentQueueJobId} complete with ${audioChunksForQueue.length} chunks`);
+        
+        // Mark job as complete with audio data
+        await queueManager.jobComplete(currentQueueJobId, audioChunksForQueue, true);
+        
+        // Reset queue job tracking
+        currentQueueJobId = null;
+        currentQueueMode = null;
+        audioChunksForQueue = [];
+        
+        updateQueueUI();
+        updateProgress(100, "Queue job complete!");
+        
+      } else {
+        // Manual job complete - use existing logic
+        if (buttonHandler.getMode() === "disk") {
+          try {
+            updateProgress(99, "Combining audio chunks...");
+            updateProgress(99.5, "Writing file to disk...");
+            await audioDiskSaver.finalizeSave();
+            updateProgress(100, "File saved successfully!");
+          } catch (error) {
+            console.error("Error combining audio chunks:", error);
+            updateProgress(100, "Error saving file!");
+          }
+          buttonHandler.resetStreamingState();
+        } else if (buttonHandler.getMode() === "stream") {
+          buttonHandler.resetStreamingState();
+          updateProgress(100, "Streaming complete");
         }
-        buttonHandler.resetStreamingState(); // Use the correct reset function
-      } else if (buttonHandler.getMode() === "stream") {
-        buttonHandler.resetStreamingState(); // Use the correct reset function
-        updateProgress(100, "Streaming complete");
       }
       break;
   }
@@ -130,12 +194,197 @@ const onMessageReceived = async (e) => {switch (e.data.status) {
 
 const onErrorReceived = (e) => {
   console.error("Worker error:", e);
-  buttonHandler.resetStreamingState(); // Use the correct reset function
+  
+  // Handle queue job error
+  if (currentQueueJobId) {
+    queueManager.jobComplete(currentQueueJobId, null, false);
+    currentQueueJobId = null;
+    currentQueueMode = null;
+    audioChunksForQueue = [];
+  }
+  
+  buttonHandler.resetStreamingState();
   updateProgress(100, "An error occurred! Please try again.");
 };
 
 tts_worker.addEventListener("message", onMessageReceived);
 tts_worker.addEventListener("error", onErrorReceived);
+
+// ===== QUEUE EVENT HANDLERS =====
+
+// Process queue job
+window.addEventListener('queue-process-job', async (event) => {
+  const { jobId, text, voice, speed, mode } = event.detail;
+  
+  console.log(`Processing queue job ${jobId} in ${mode} mode`);
+  
+  // Set current queue job tracking
+  currentQueueJobId = jobId;
+  currentQueueMode = mode;
+  audioChunksForQueue = [];
+  
+  // Send to worker
+  tts_worker.postMessage({ 
+    type: "generate", 
+    text: text, 
+    voice: voice, 
+    speed: speed 
+  });
+  
+  updateProgress(0, `Processing queue job ${jobId}...`);
+});
+
+// Show completed job
+window.addEventListener('queue-show-job', async (event) => {
+  const { jobId } = event.detail;
+  
+  // Get audio data
+  const audioData = await queueManager.getAudioData(jobId);
+  
+  if (audioData && audioData.chunks) {
+    console.log(`Playing completed job ${jobId}`);
+    
+    // Play the audio chunks
+    for (const chunk of audioData.chunks) {
+      await audioPlayer.queueAudio(chunk);
+    }
+    
+    updateProgress(100, `Playing job ${jobId}`);
+  }
+});
+
+// ===== QUEUE UI MANAGEMENT =====
+
+async function updateQueueUI() {
+  const queueContainer = document.getElementById('queueContainer');
+  const queueList = document.getElementById('queueList');
+  const queueStats = document.getElementById('queueStats');
+  
+  const stats = await queueManager.getQueueStats();
+  const jobs = await queueManager.getAllJobs();
+  
+  // Update stats
+  queueStats.textContent = `${stats.queued} queued, ${stats.processing} processing, ${stats.complete} complete`;
+  
+  // Show/hide container
+  if (jobs.length > 0) {
+    queueContainer.style.display = 'block';
+  } else {
+    queueContainer.style.display = 'none';
+    return;
+  }
+  
+  // Build job list
+  queueList.innerHTML = '';
+  
+  for (const job of jobs.sort((a, b) => b.id - a.id)) {
+    const jobEl = document.createElement('div');
+    jobEl.className = `queue-job queue-job-${job.status}`;
+    
+    const textPreview = job.text.substring(0, 60) + (job.text.length > 60 ? '...' : '');
+    const statusEmoji = {
+      'queued': 'â³',
+      'processing': 'âš™ï¸',
+      'complete': 'âœ…',
+      'failed': 'âŒ'
+    }[job.status] || 'â“';
+    
+    jobEl.innerHTML = `
+      <div class="queue-job-header">
+        <span class="queue-job-status">${statusEmoji} ${job.status.toUpperCase()}</span>
+        <span class="queue-job-mode">${job.mode}</span>
+        <span class="queue-job-id">#${job.id}</span>
+      </div>
+      <div class="queue-job-text">${textPreview}</div>
+      <div class="queue-job-meta">
+        <span>Voice: ${job.voice}</span>
+        <span>Speed: ${job.speed.toFixed(2)}x</span>
+        ${job.progress > 0 ? `<span>Progress: ${Math.round(job.progress)}%</span>` : ''}
+      </div>
+      <div class="queue-job-actions">
+        ${job.status === 'complete' ? `
+          <button class="queue-btn queue-btn-play" onclick="playQueueJob(${job.id})">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            Play
+          </button>
+          <button class="queue-btn queue-btn-download" onclick="downloadQueueJob(${job.id})">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Download
+          </button>
+        ` : ''}
+        <button class="queue-btn queue-btn-delete" onclick="deleteQueueJob(${job.id})">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+          Delete
+        </button>
+      </div>
+    `;
+    
+    queueList.appendChild(jobEl);
+  }
+}
+
+// Global functions for queue actions
+window.playQueueJob = async function(jobId) {
+  const audioData = await queueManager.getAudioData(jobId);
+  
+  if (audioData && audioData.chunks) {
+    console.log(`Playing job ${jobId} with ${audioData.chunks.length} chunks`);
+    updateProgress(0, `Playing job ${jobId}...`);
+    
+    for (const chunk of audioData.chunks) {
+      await audioPlayer.queueAudio(chunk);
+    }
+  } else {
+    alert('No audio data found for this job');
+  }
+};
+
+window.downloadQueueJob = async function(jobId) {
+  const audioData = await queueManager.getAudioData(jobId);
+  
+  if (audioData && audioData.chunks) {
+    // Combine chunks and save as WAV
+    try {
+      await audioDiskSaver.initSave();
+      
+      for (const chunk of audioData.chunks) {
+        await audioDiskSaver.addAudioChunk(chunk);
+      }
+      
+      await audioDiskSaver.finalizeSave();
+      updateProgress(100, "Download complete!");
+    } catch (error) {
+      console.error('Download error:', error);
+      alert('Download failed: ' + error.message);
+    }
+  } else {
+    alert('No audio data found for this job');
+  }
+};
+
+window.deleteQueueJob = async function(jobId) {
+  if (confirm(`Delete job #${jobId}?`)) {
+    await queueManager.deleteJob(jobId);
+    updateQueueUI();
+  }
+};
+
+window.clearCompletedJobs = async function() {
+  const count = await queueManager.clearCompletedJobs();
+  alert(`Cleared ${count} completed job(s)`);
+  updateQueueUI();
+};
+
+// ===== INITIALIZATION =====
 
 document.addEventListener('DOMContentLoaded', async () => {
   updateProgress(0, "Initializing Kokoro model...");
@@ -143,15 +392,39 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById("ta").value = await (await fetch('./end.txt')).text();
   buttonHandler.init();
 
-  // This block connects the speed slider label
+  // Initialize queue manager
+  await queueManager.init();
+  
+  // Connect queue manager to button handler
+  buttonHandler.setQueueManager(queueManager);
+  queueManager.onQueueUpdate = updateQueueUI;
+  queueManager.onJobComplete = (jobId, success) => {
+    console.log(`Job ${jobId} completed: ${success}`);
+  };
+  
+  // Update queue UI
+  updateQueueUI();
+
+  // Speed slider setup
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
   if (speedSlider && speedLabel) {
     speedLabel.textContent = getRealSpeed(parseFloat(speedSlider.value)).toFixed(2);
     speedSlider.addEventListener('input', () => {
-        const sliderValue = parseFloat(speedSlider.value);
-        const realSpeed = getRealSpeed(sliderValue);
-        speedLabel.textContent = realSpeed.toFixed(2);
+      const sliderValue = parseFloat(speedSlider.value);
+      const realSpeed = getRealSpeed(sliderValue);
+      speedLabel.textContent = realSpeed.toFixed(2);
+    });
+  }
+  
+  // Add queue mode checkbox handler
+  const queueModeCheckbox = document.getElementById('queueMode');
+  if (queueModeCheckbox) {
+    queueModeCheckbox.addEventListener('change', (e) => {
+      const queueInfo = document.getElementById('queueInfo');
+      if (queueInfo) {
+        queueInfo.style.display = e.target.checked ? 'block' : 'none';
+      }
     });
   }
 });
@@ -159,3 +432,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 window.addEventListener("beforeunload", () => {
   audioPlayer.close();
 });
+
+// Export queue manager for debugging
+window.queueManager = queueManager;
