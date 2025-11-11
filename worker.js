@@ -1,128 +1,137 @@
-// worker.js - TTS Processing Engine
-import { KokoroTTS } from "./kokoro.js";
-import { env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/dist/transformers.min.js";
-import { splitTextSmart } from "./semantic-split.js";
+import { KokoroTTS } from "https://cdn.jsdelivr.net/npm/@xenova/transformers@3.2.0";
 
-async function detectWebGPU() {
-  try {
-    // Check if WebGPU is supported
-    if (!('gpu' in navigator)) {
-      console.log("WebGPU not supported in this browser, using WASM");
-      return false;
-    }
-    
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) {
-      console.log("No WebGPU adapter found, using WASM");
-      return false;
-    }
-    
-    console.log("WebGPU adapter found:", adapter.info.device || 'Unknown');
-    return true;
-  } catch (error) {
-    console.warn("WebGPU detection failed:", error.message, "using WASM");
-    return false;
-  }
-}
-
-const device = await detectWebGPU() ? "webgpu" : "wasm";
-self.postMessage({ status: "loading_model_start", device });
-
-let model_id = "onnx-community/Kokoro-82M-v1.0-ONNX";
-let useWasmFallback = false;
-
-if (self.location.hostname === "localhost2") {
-  env.allowLocalModels = true;
-  model_id = "./my_model/";
-}
-
-let tts = null;
-try {
-  tts = await KokoroTTS.from_pretrained(model_id, {
-    dtype: device === "wasm" ? "q8" : "fp32", device,
-    //dtype: "fp16",
-    progress_callback: (progress) => {
-      self.postMessage({ status: "loading_model_progress", progress });
-    }
-  });
-} catch (initialError) {
-  console.warn("Failed to load model with WebGPU, falling back to WASM:", initialError.message);
-  useWasmFallback = true;
-  tts = await KokoroTTS.from_pretrained(model_id, {
-    dtype: "q8",
-    device: "wasm",
-    progress_callback: (progress) => {
-      self.postMessage({ status: "loading_model_progress", progress });
-    }
-  });
-}
-
-self.postMessage({ status: "loading_model_ready", voices: tts.voices, device: useWasmFallback ? "wasm" : device });
-
-// --- THIS IS THE MEMORY-SAFE QUEUE LOGIC FOR SENTENCES WITHIN A CHUNK ---
-let bufferQueueSize = 0;
-const MAX_QUEUE_SIZE = 6;
+let currentTTS = null;
 let shouldStop = false;
-// --- END QUEUE LOGIC ---
+let useWasmFallback = false;
+let model_id = "onnx-community/kokoro-v1_1-onnx";
+const MAX_QUEUE_SIZE = 10;
+let bufferQueueSize = 0;
 
-self.addEventListener("message", async (e) => {
-  const { type, text, voice, speed } = e.data;
-  
-  if (type === "stop") {
+const MAX_WAIT_ATTEMPTS = 60; // 30 seconds at 500ms intervals
+const WAIT_INTERVAL = 500;
+
+self.onmessage = async (e) => {
+  if (e.data.command === "stop") {
     shouldStop = true;
-    bufferQueueSize = 0;
-    console.log("Stop command received, stopping generation");
     return;
   }
 
-  if (type === "buffer_processed") {
-    bufferQueueSize = Math.max(0, bufferQueueSize - 1);
+  if (e.data.command === "init") {
+    try {
+      console.log("Initializing TTS model...");
+      
+      // Try WebGPU first, then fall back to WASM if needed
+      try {
+        currentTTS = await KokoroTTS.from_pretrained(model_id, {
+          dtype: "q8",
+          device: "webgpu"
+        });
+        console.log("WebGPU model loaded successfully");
+      } catch (webgpuError) {
+        console.warn("WebGPU failed, falling back to WASM:", webgpuError.message);
+        currentTTS = await KokoroTTS.from_pretrained(model_id, {
+          dtype: "q8", 
+          device: "wasm"
+        });
+        useWasmFallback = true;
+        console.log("WASM model loaded successfully");
+      }
+      
+      self.postMessage({ status: "initialized" });
+    } catch (error) {
+      console.error("Failed to initialize TTS model:", error);
+      self.postMessage({ status: "error", message: error.message });
+    }
     return;
   }
 
-  if (type === "generate" && text) { 
-    shouldStop = false;
-    
-    // MODERATE APPROACH: Process 2-3 sentences per chunk to balance speed and reliability
-    let sentences = splitTextSmart(text, 800); // Process 2-3 sentences per chunk
-    let currentTTS = tts;
-    let useWasmFallback = false;
+  if (e.data.command === "generate") {
+    try {
+      await generateAudio(e.data.text, e.data.voice, e.data.speed);
+    } catch (error) {
+      console.error("Generation failed:", error);
+      self.postMessage({ status: "error", message: error.message });
+    }
+  }
+};
 
-    console.log(`Processing ${sentences.length} sentences per chunk for better speed`);
+async function generateAudio(text, voice = "af_bella", speed = 1.0) {
+  console.log(`Starting audio generation for ${text.length} characters`);
+  useWasmFallback = currentTTS?.device === 'wasm' || useWasmFallback;
+  
+  // Get sentences using simple splitting (reliable)
+  const sentences = text
+    .split(/[.!?]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  console.log(`Processing ${sentences.length} sentences`);
+  
+  // Group sentences into chunks of 2-3 sentences for moderate chunking
+  const chunkSize = Math.min(3, Math.max(2, Math.ceil(sentences.length / 10))); // 2-3 sentences per chunk
+  const chunks = [];
+  for (let i = 0; i < sentences.length; i += chunkSize) {
+    chunks.push(sentences.slice(i, i + chunkSize));
+  }
+  
+  console.log(`Grouped into ${chunks.length} chunks with ${chunkSize} sentences per chunk`);
+
+  // Process each chunk separately
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const chunkSentences = chunks[chunkIndex];
     
-    // CRITICAL FIX: Always report the total sentences being processed
+    // Send sentence count for progress tracking
     self.postMessage({ 
       status: "chunk_progress", 
-      sentencesInChunk: sentences.length,
-      totalEstimated: sentences.length
+      sentencesInChunk: chunkSentences.length,
+      currentSentence: 0
     });
-    
-    // Wait for buffer space with timeout to prevent infinite wait
-    let waitAttempts = 0;
-    const MAX_WAIT_ATTEMPTS = 60; // 30 seconds max wait
-    while (bufferQueueSize >= MAX_QUEUE_SIZE && !shouldStop && waitAttempts < MAX_WAIT_ATTEMPTS) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      waitAttempts++;
-    }
-    
-    if (shouldStop) {
-      self.postMessage({ status: "complete" });
-      return;
-    }
+
+  // Wait for buffer queue to have space
+  let waitAttempts = 0;
+  while (bufferQueueSize >= MAX_QUEUE_SIZE && !shouldStop) {
+    await new Promise(resolve => setTimeout(resolve, WAIT_INTERVAL));
+    waitAttempts++;
     
     if (waitAttempts >= MAX_WAIT_ATTEMPTS) {
       console.warn("Buffer queue timeout, proceeding anyway");
+      break;
     }
+  }
+  
+  if (shouldStop) {
+    self.postMessage({ status: "complete" });
+    return;
+  }
+  
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const chunkSentences = chunks[chunkIndex];
     
-    for (let i = 0; i < sentences.length; i++) {
-      const sentence = sentences[i];
+    if (shouldStop) break;
+    
+    let attemptCount = 0;
+    const maxAttempts = 3; // Try same method up to 3 times
+    let wasmInitAttempts = 0;
+    const maxWasmInitAttempts = 2; // Only switch to WASM after multiple failures
+    
+    // Report progress for this chunk
+    self.postMessage({ 
+      status: "chunk_progress", 
+      sentencesInChunk: chunkSentences.length,
+      currentSentence: 0
+    });
+    
+    for (let i = 0; i < chunkSentences.length; i++) {
+      const sentence = chunkSentences[i];
       if (shouldStop) break;
       
-      // Moderate delay between sentences (not too long)
+      // Moderate delay between sentences (reduced for better speed)
       if (i > 0) {
-        await new Promise(resolve => setTimeout(resolve, 800)); // Reduced from 1500 to 800ms
+        await new Promise(resolve => setTimeout(resolve, 500)); // Reduced from 800ms to 500ms
       }
-      
+    
+    let sentenceProcessed = false;
+    while (attemptCount < maxAttempts && !sentenceProcessed && !shouldStop) {
       try {
         // Simple timeout for each sentence (25 seconds)
         const audioPromise = currentTTS.generate(sentence, { voice, speed });
@@ -138,9 +147,12 @@ self.addEventListener("message", async (e) => {
         bufferQueueSize++;
         self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
         
-        console.log(`Sentence ${i + 1}/${sentences.length} processed successfully`);
+        console.log(`Sentence ${i + 1}/${chunkSentences.length} processed successfully`);
+        sentenceProcessed = true;
         
       } catch (audioError) {
+        attemptCount++;
+        
         const isWebGPUError = audioError.message && 
           (audioError.message.includes('GPUBuffer') || 
            audioError.message.includes('webgpu') ||
@@ -149,47 +161,94 @@ self.addEventListener("message", async (e) => {
         const isSessionError = audioError.message && 
           audioError.message.includes('Session already started');
         
-        if (isSessionError || (isWebGPUError && !useWasmFallback)) {
-          console.warn("Session/WebGPU error, falling back to WASM:", audioError.message);
-          useWasmFallback = true;
-          try {
-            if (!tts._wasmFallback) {
-              console.log("Initializing WASM fallback model...");
-              tts._wasmFallback = await KokoroTTS.from_pretrained(model_id, {
-                dtype: "q8",
-                device: "wasm"
-              });
+        if (isSessionError || isWebGPUError) {
+          if (attemptCount < maxAttempts) {
+            console.warn(`Session/WebGPU error on attempt ${attemptCount}, retrying with same method:`, audioError.message);
+            
+            // For session errors, clear buffers and wait for session to properly clear
+            if (isSessionError) {
+              console.log("Clearing pending buffers and waiting for session reset...");
+              
+              // Clear any pending buffer queue
+              bufferQueueSize = 0;
+              
+              // Wait longer for session to clear (2 seconds)
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            } else {
+              // For WebGPU errors, shorter wait
+              await new Promise(resolve => setTimeout(resolve, 1000));
             }
-            currentTTS = tts._wasmFallback;
             
-            // Shorter delay for WASM retry
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            // Try again with the same method (WebGPU or WASM)
+            continue;
+          } else {
+            // If all retries with same method failed, then consider switching to WASM
+            console.warn(`All attempts with current method failed, considering WASM fallback...`);
             
-            const audio = await currentTTS.generate(sentence, { voice, speed });
-            let ab = audio.audio.buffer;
-            bufferQueueSize++;
-            self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
-            
-            console.log(`Sentence ${i + 1}/${sentences.length} processed with WASM fallback`);
-            
-          } catch (wasmError) {
-            console.error("WASM fallback failed, skipping sentence:", wasmError.message);
-            // Continue to next sentence
+            if (!useWasmFallback && wasmInitAttempts < maxWasmInitAttempts) {
+              useWasmFallback = true;
+              wasmInitAttempts++;
+              console.log("Switching to WASM fallback mode");
+              
+              try {
+                if (!self._wasmFallback || wasmInitAttempts === 1) {
+                  console.log("Initializing WASM fallback model...");
+                  
+                  // Add timeout protection for WASM initialization (10 seconds max)
+                  const wasmInitPromise = KokoroTTS.from_pretrained(model_id, {
+                    dtype: "q8",
+                    device: "wasm"
+                  });
+                  
+                  const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('WASM initialization timeout')), 10000);
+                  });
+                  
+                  self._wasmFallback = await Promise.race([wasmInitPromise, timeoutPromise]);
+                  console.log("WASM fallback model initialized successfully");
+                }
+                currentTTS = self._wasmFallback;
+                
+                // Very short delay for WASM retry
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                const audio = await currentTTS.generate(sentence, { voice, speed });
+                let ab = audio.audio.buffer;
+                bufferQueueSize++;
+                self.postMessage({ status: "stream_audio_data", audio: ab }, [ab]);
+                
+                console.log(`Sentence ${i + 1}/${chunkSentences.length} processed with WASM fallback`);
+                sentenceProcessed = true;
+                
+              } catch (wasmError) {
+                console.error("WASM fallback failed:", wasmError.message);
+                console.error("Skipping sentence after all methods exhausted:", sentence.substring(0, 100) + "...");
+                break;
+              }
+            } else {
+              console.error("WASM fallback not available or maxed out, skipping sentence:", sentence.substring(0, 100) + "...");
+              break;
+            }
           }
         } else if (audioError.message && audioError.message.includes('timeout')) {
           console.warn("Audio generation timeout, skipping sentence:", sentence.substring(0, 100) + "...");
+          break;
         } else {
           console.error("Audio generation error, skipping sentence:", audioError.message);
-          // Continue to next sentence for any other errors
+          if (attemptCount >= maxAttempts) {
+            break;
+          }
         }
       }
     }
-
-    // Always send complete message to prevent hanging
-    console.log(`Chunk processing complete with ${sentences.length} sentences`);
+    
+    // After each chunk completes, send complete message
+    console.log(`Chunk ${chunkIndex + 1}/${chunks.length} processing complete with ${chunkSentences.length} sentences`);
     self.postMessage({ 
       status: "complete",
-      processedSentences: sentences.length
+      processedSentences: chunkSentences.length,
+      chunkNumber: chunkIndex + 1,
+      totalChunks: chunks.length
     });
   }
-});
+}
