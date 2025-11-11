@@ -39,7 +39,14 @@ let tts_workers = []; // Array of workers instead of single worker
 
 // Initialize multiple workers
 for (let i = 0; i < NUM_WORKERS; i++) {
-  tts_workers.push(new Worker(new URL("./worker_webgpu_only_simple.js", import.meta.url), { type: "module" }));
+  try {
+    console.log(`Initializing worker ${i + 1}/${NUM_WORKERS}...`);
+    const worker = new Worker(new URL("./worker_webgpu_only_simple.js", import.meta.url), { type: "module" });
+    tts_workers.push(worker);
+    console.log(`Worker ${i + 1} initialized successfully`);
+  } catch (error) {
+    console.error(`Failed to initialize worker ${i + 1}:`, error);
+  }
 }
 
 let audioPlayer = new AudioPlayer(tts_workers[0]); // Use first worker
@@ -281,10 +288,24 @@ const onMessageReceived = async (e) => {
 const onErrorReceived = (e) => {
   console.error("Worker error:", e);
   
+  // Log more detailed error information
+  if (e.target) {
+    console.error("Worker target:", e.target);
+    console.error("Worker script URL:", e.target.scriptURL || 'Unknown');
+    console.error("Worker state:", e.target.state || 'Unknown');
+  }
+  
   // Check for WebGPU buffer errors
   if (e.message && e.message.includes('GPUBuffer')) {
     console.warn("WebGPU buffer error detected. This may be due to page refresh or context loss.");
     updateProgress(100, "WebGPU context lost. Please refresh and try again.");
+    return;
+  }
+  
+  // Handle specific worker loading errors
+  if (e.message && e.message.includes('Failed to load')) {
+    console.error("Worker failed to load. Check if worker_webgpu_only_simple.js exists and is accessible.");
+    updateProgress(100, "Worker loading failed. Please check file paths and try refreshing.");
     return;
   }
   
@@ -301,8 +322,23 @@ const onErrorReceived = (e) => {
   updateProgress(100, "An error occurred! Please try again.");
 };
 
-tts_workers[0].addEventListener("message", onMessageReceived);
-tts_workers[0].addEventListener("error", onErrorReceived);
+// Add event listeners to all workers
+for (let i = 0; i < NUM_WORKERS; i++) {
+  tts_workers[i].addEventListener("message", onMessageReceived);
+  tts_workers[i].addEventListener("error", onErrorReceived);
+}
+
+// Fallback to single worker if multi-worker fails
+let useSingleWorker = false;
+let workerFailureCount = 0;
+
+window.addEventListener('error', (e) => {
+  if (e.message && e.message.includes('Worker') && workerFailureCount === 0) {
+    console.warn("Multi-worker failed, falling back to single worker mode");
+    useSingleWorker = true;
+    workerFailureCount++;
+  }
+});
 
 // ===== QUEUE EVENT HANDLERS =====
 
@@ -343,8 +379,13 @@ window.addEventListener('queue-process-job', async (event) => {
       processedSentences: 0
     };
     
-    // Distribute chunks among workers
-    await processChunksMultiWorker(chunks, jobId, voice, speed, mode);
+    // Use multi-worker or fallback to single worker
+    if (!useSingleWorker) {
+      await processChunksMultiWorker(chunks, jobId, voice, speed, mode);
+    } else {
+      console.log("Using single worker fallback for job", jobId);
+      await processChunksSingleWorker(chunks, jobId, voice, speed, mode);
+    }
     
   } catch (error) {
     console.error("Error splitting text into chunks:", error);
@@ -773,6 +814,71 @@ window.refreshQueueDisplay = async function() {
   const stats = await queueManager.getQueueStats();
   console.log('Queue refreshed:', stats);
 };
+
+// Fallback single worker processing function
+async function processChunksSingleWorker(chunks, jobId, voice, speed, diskMode) {
+  const totalChunks = chunks.length;
+  let completedChunks = 0;
+  
+  console.log(`Starting single worker fallback processing: ${totalChunks} chunks`);
+  updateProgress(0, `Processing queue job ${jobId} with single worker (fallback)`);
+  
+  // Process chunks sequentially with the first worker
+  for (let i = 0; i < chunks.length; i++) {
+    if (currentQueueJobId !== jobId) {
+      console.log('Job cancelled');
+      return;
+    }
+    
+    const chunk = chunks[i];
+    const chunkNum = i + 1;
+    
+    try {
+      console.log(`Single worker processing chunk ${chunkNum}/${totalChunks}`);
+      
+      const result = await processChunkWithWorker(tts_workers[0], chunk, voice, speed);
+      
+      if (result && result.audioChunks) {
+        completedChunks++;
+        
+        const percent = (completedChunks / totalChunks) * 100;
+        updateProgress(
+          percent, 
+          `Processing queue job ${jobId}: ${completedChunks}/${totalChunks} chunks (Single worker)`
+        );
+        
+        // Handle audio output
+        if (diskMode) {
+          for (const audioChunk of result.audioChunks) {
+            if (audioChunk.audio && audioChunk.audio.byteLength > 0) {
+              await audioDiskSaver.saveAudioChunk(audioChunk, chunkNum);
+            }
+          }
+        } else {
+          for (const audioChunk of result.audioChunks) {
+            if (audioChunk.audio && audioChunk.audio.byteLength > 0) {
+              audioPlayer.addAudioChunk(audioChunk, chunkNum);
+            }
+          }
+        }
+      }
+      
+    } catch (chunkError) {
+      console.error(`Error processing chunk ${chunkNum}:`, chunkError);
+    }
+  }
+  
+  console.log(`Single worker processing complete: ${completedChunks}/${totalChunks} chunks`);
+  
+  // Complete the job
+  if (currentQueueJobId === jobId) {
+    await queueManager.jobComplete(jobId, audioChunksForQueue, true);
+    currentQueueJobId = null;
+    currentQueueMode = null;
+    audioChunksForQueue = [];
+    updateProgress(100, "Queue job completed successfully");
+  }
+}
 
 // ===== INITIALIZATION =====
 
