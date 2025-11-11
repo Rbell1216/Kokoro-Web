@@ -266,16 +266,29 @@ async function updateQueueUI() {
   // Update stats
   queueStats.textContent = `${stats.queued} queued, ${stats.processing} processing, ${stats.complete} complete`;
   
-  // Show/hide container
-  if (jobs.length > 0) {
-    queueContainer.style.display = 'block';
-  } else {
-    queueContainer.style.display = 'none';
-    return;
-  }
+  // Queue container is always visible (removed hide/show logic for always-visible queue)
   
   // Build job list
   queueList.innerHTML = '';
+  
+  if (jobs.length === 0) {
+    const emptyEl = document.createElement('div');
+    emptyEl.className = 'queue-empty-state';
+    emptyEl.innerHTML = `
+      <div class="empty-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.5;">
+          <path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z"></path>
+          <path d="M8 21v-4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4"></path>
+          <line x1="9" y1="7" x2="9" y2="7"></line>
+          <line x1="15" y1="7" x2="15" y2="7"></line>
+        </svg>
+      </div>
+      <h4>No jobs in queue</h4>
+      <p>Enable "Background Queue Mode" and submit a job to get started</p>
+    `;
+    queueList.appendChild(emptyEl);
+    return;
+  }
   
   for (const job of jobs.sort((a, b) => b.id - a.id)) {
     const jobEl = document.createElement('div');
@@ -463,6 +476,24 @@ window.clearCompletedJobs = async function() {
   const count = await queueManager.clearCompletedJobs();
   alert(`Cleared ${count} completed job(s)`);
   updateQueueUI();
+};
+
+window.refreshQueueDisplay = async function() {
+  // Add a small visual feedback for the refresh
+  const refreshBtn = document.querySelector('.queue-btn-refresh');
+  if (refreshBtn) {
+    refreshBtn.style.opacity = '0.7';
+    setTimeout(() => {
+      refreshBtn.style.opacity = '1';
+    }, 200);
+  }
+  
+  // Force refresh the queue display
+  updateQueueUI();
+  
+  // Also refresh the queue stats
+  const stats = await queueManager.getQueueStats();
+  console.log('Queue refreshed:', stats);
 };
 
 // ===== INITIALIZATION =====
